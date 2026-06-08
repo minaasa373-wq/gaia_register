@@ -4,7 +4,7 @@
    ======================================== */
 
 // ===== 設定 =====
-const GAS_URL = "https://script.google.com/macros/s/AKfycbyhM8ddjir1GJdKhmYzuCW1879ZiEJAPlKRkM2aTGUc96NatJgpklfmF58CdxRvA050/exec"; // ← ここにGASのWebアプリURLを貼り付け
+const GAS_URL = "YOUR_GAS_URL_HERE"; // ← ここにGASのWebアプリURLを貼り付け
 
 // ===== 状態 =====
 const state = {
@@ -112,16 +112,34 @@ function setupUI() {
   const sel = document.getElementById("staffSelect");
   sel.innerHTML = state.staff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join("");
 
-  // カテゴリタブ
+  // カテゴリタブ（各タブにカテゴリ色を適用）
   const cats = ["全て", ...new Set(state.products.map(p => p.category).filter(Boolean))];
   const tabs = document.getElementById("categoryTabs");
-  tabs.innerHTML = cats.map(c =>
-    `<button class="cat-tab${c === state.activeCategory ? " active" : ""}" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>`
-  ).join("");
+  tabs.innerHTML = cats.map(c => {
+    const col = (c === "全て") ? "#1a5c3a" : getCategoryColor(c, "");
+    const active = c === state.activeCategory;
+    return `<button class="cat-tab${active ? " active" : ""}" data-cat="${escapeHtml(c)}" data-color="${col}" style="--tab-color:${col}">${escapeHtml(c)}</button>`;
+  }).join("");
+  const applyTabStyle = (btn) => {
+    const col = btn.dataset.color;
+    if (btn.classList.contains("active")) {
+      btn.style.background = col;
+      btn.style.borderColor = col;
+      btn.style.color = "#fff";
+    } else {
+      btn.style.background = "var(--surface)";
+      btn.style.borderColor = col;
+      btn.style.color = col;
+    }
+  };
   tabs.querySelectorAll(".cat-tab").forEach(t => {
+    applyTabStyle(t);
     t.addEventListener("click", () => {
       state.activeCategory = t.dataset.cat;
-      tabs.querySelectorAll(".cat-tab").forEach(x => x.classList.toggle("active", x === t));
+      tabs.querySelectorAll(".cat-tab").forEach(x => {
+        x.classList.toggle("active", x === t);
+        applyTabStyle(x);
+      });
       renderProducts();
     });
   });
@@ -134,13 +152,17 @@ function renderProducts() {
   const grid = document.getElementById("productGrid");
 
   // 用量違いの商品を「品名」でグループ化（同じ品名で用量が複数あるものは1タイルにまとめる）
+  const q = state.searchQuery ? normalizeSearch(state.searchQuery) : "";
   let filtered = state.products.filter(p => {
-    if (state.activeCategory !== "全て" && p.category !== state.activeCategory) return false;
-    if (state.searchQuery) {
-      const q = state.searchQuery.toLowerCase();
-      const target = (p.name + " " + (p.keywords || "") + " " + (p.subcategory || "")).toLowerCase();
-      if (!target.includes(q)) return false;
+    if (q) {
+      // 検索中は常に全カテゴリ横断（タブ選択を無視）
+      const target = normalizeSearch(
+        (p.name || "") + " " + (p.keywords || "") + " " + (p.subcategory || "")
+      );
+      return target.includes(q);
     }
+    // 非検索時はタブで絞り込み
+    if (state.activeCategory !== "全て" && p.category !== state.activeCategory) return false;
     return true;
   });
 
@@ -188,6 +210,18 @@ function renderProducts() {
         <div class="tile-dose">${group.length}種類の用量</div>
       </div>`;
     }).join("");
+}
+
+// ===== 検索文字列の正規化（大小文字・半角/全角カナを吸収） =====
+function normalizeSearch(s) {
+  if (!s) return "";
+  let t = String(s).toLowerCase();
+  // NFKC で半角カナ→全角カナ・全角英数→半角英数に正規化
+  try { t = t.normalize("NFKC"); } catch (e) {}
+  // カタカナ→ひらがな（読み仮名のゆれを吸収）
+  t = t.replace(/[\u30A1-\u30F6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+  // 空白除去
+  return t.replace(/\s+/g, "");
 }
 
 // ===== 単位サフィックス（錠は省略、それ以外は「 /本」のように表示） =====
@@ -358,7 +392,7 @@ function confirmPowder() {
 function renderCart() {
   const list = document.getElementById("cartList");
   if (state.cart.length === 0) {
-    list.innerHTML = `<div class="cart-empty">商品タイルをタップして<br>注文を追加してください</div>`;
+    list.innerHTML = `<div class="cart-empty">商品タイルをタップして<br>診療内容を追加してください</div>`;
     closeEdit();
   } else {
     list.innerHTML = state.cart.map(item => {
@@ -368,6 +402,7 @@ function renderCart() {
       const detailLine = `${qtyUnitText(item)} × ¥${item.price.toLocaleString()}`;
       return `
         <div class="cart-item ${cls}" onclick="selectCartItem(${item.itemId})">
+          <button class="cart-item-del" onclick="event.stopPropagation();removeCartItem(${item.itemId})" title="削除">×</button>
           <div class="cart-item-name">${escapeHtml(dispName)}</div>
           <div class="cart-item-detail">
             <span>${detailLine}</span>
@@ -420,10 +455,16 @@ function applyEdit() {
 
 function deleteSelected() {
   if (!state.selectedItemId) return;
-  if (!confirm("この行を削除しますか？")) return;
-  state.cart = state.cart.filter(c => c.itemId !== state.selectedItemId);
-  state.selectedItemId = null;
-  document.getElementById("editPanel").classList.add("hidden");
+  removeCartItem(state.selectedItemId);
+}
+
+// 行の×ボタンから即削除（確認ダイアログなし）
+function removeCartItem(itemId) {
+  state.cart = state.cart.filter(c => c.itemId !== itemId);
+  if (state.selectedItemId === itemId) {
+    state.selectedItemId = null;
+    document.getElementById("editPanel").classList.add("hidden");
+  }
   renderCart();
 }
 
@@ -439,6 +480,8 @@ function recalc() {
   document.getElementById("taxDisp").textContent = "¥" + tax.toLocaleString();
   document.getElementById("totalDisp").textContent = "¥" + total.toLocaleString();
   document.getElementById("checkoutBtn").disabled = state.cart.length === 0;
+  const clearBtn = document.getElementById("clearAllBtn");
+  if (clearBtn) clearBtn.disabled = state.cart.length === 0;
   return { subtotal, tax, total };
 }
 
@@ -570,14 +613,18 @@ async function doPrint() {
   // 印刷
   setTimeout(() => {
     window.print();
-    // 印刷後にカートクリア
     setTimeout(() => {
       if (recordResult) {
+        // 記録に成功したときだけ会計を確定（カートクリア）
         showToast("印刷＆スプシに記録しました");
         addToTodayStats();
+        clearCart();
+        closeReceipt();
+      } else {
+        // 記録できていない場合は内容を残す（やり直せるように）
+        showToast("記録できませんでした。内容は保持しています", "error");
+        closeReceipt();
       }
-      clearCart();
-      closeReceipt();
     }, 500);
   }, 200);
 }
@@ -687,6 +734,13 @@ function closeSummary() {
 }
 
 // ===== カートクリア =====
+// 全消去ボタン（破壊的なので確認あり）
+function clearAll() {
+  if (state.cart.length === 0) return;
+  if (!confirm("入力中の診療内容をすべて消去しますか？")) return;
+  clearCart();
+}
+
 function clearCart() {
   state.cart = [];
   state.selectedItemId = null;
