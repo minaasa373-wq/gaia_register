@@ -536,27 +536,16 @@ function renderReceiptHtml(forPrint, invoiceNo) {
   const items = state.cart.map(item => {
     const amount = Math.round(item.qty * item.price);
     const dispName = item.dose ? `${item.name} ${item.dose}` : item.name;
-    if (item.isPowder) {
-      return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
-        <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
-          <span>${escapeHtml(dispName)}</span>
-          <span>¥${amount.toLocaleString()}</span>
-        </div>
-        <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
-          ${item.qty}${item.unit}
-        </div>
-      </div>`;
-    } else {
-      return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
-        <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
-          <span>${escapeHtml(dispName)}</span>
-          <span>¥${amount.toLocaleString()}</span>
-        </div>
-        <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
-          ${qtyUnitText(item)} × ¥${item.price.toLocaleString()}
-        </div>
-      </div>`;
-    }
+    // 粉薬も通常薬と同じく「数量＋単位 × 単価」を表示する
+    return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
+      <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
+        <span>${escapeHtml(dispName)}</span>
+        <span>¥${amount.toLocaleString()}</span>
+      </div>
+      <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
+        ${qtyUnitText(item)} × ¥${item.price.toLocaleString()}
+      </div>
+    </div>`;
   }).join("");
 
   if (forPrint) {
