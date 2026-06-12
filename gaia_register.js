@@ -663,21 +663,24 @@ async function doPrint() {
     </div>
   `;
 
-  // ---- 3. 印刷 → 会計確定 ----
-  // 印刷ダイアログを開き、完了後にカートをクリアしてロックを解除する。
-  // どの経路でも最後に releasePrintLock() を必ず通すことで、ボタンが暗いまま固まるのを防ぐ。
+  // ---- 3. 会計を確定 → 印刷 ----
+  // 記録（採番）は既に成功しているので、ここで会計を確定し、
+  // 「印刷を開始する前に」ロックを解除する。
+  // ※iPad Safari/Chrome では window.print() が印刷ダイアログ操作（印刷/キャンセル）まで
+  //   ブロックしたり、ダイアログ表示中にタイマーが遅延・停止することがある。
+  //   印刷完了を待ってロック解除する方式だと、ここでボタンが固まる。
+  //   そのため「印刷の成否や操作に依存せず」先にロック解除する。
+  showToast("スプシに記録しました（No. " + invoiceNo + "）");
+  clearCart();
+  closeReceipt();
+  releasePrintLock();
+
+  // 印刷を実行（このあとボタンは既に復活済みなので、固まらない）
   setTimeout(() => {
     try {
       window.print();
     } catch (e) {
       showToast("印刷でエラー：" + e.message, "error");
-    } finally {
-      setTimeout(() => {
-        showToast("印刷＆スプシに記録しました（No. " + invoiceNo + "）");
-        clearCart();
-        closeReceipt();
-        releasePrintLock();
-      }, 500);
     }
   }, 200);
 }
