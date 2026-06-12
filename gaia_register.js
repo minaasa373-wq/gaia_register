@@ -17,9 +17,6 @@ const state = {
   activeCategory: "全て",
   searchQuery: "",
   currentDose: null,    // 用量モーダル選択中
-  todaySales: 0,
-  todayCount: 0,
-  todayItems: [],
   lastInvoiceNo: null   // 直近の印刷でサーバ採番された伝票番号
 };
 
@@ -33,6 +30,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // 検索バー
   document.getElementById("searchInput").addEventListener("input", (e) => {
     state.searchQuery = e.target.value.trim();
+    updateSearchClearBtn();
     renderProducts();
   });
 
@@ -69,7 +67,6 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // データ読み込み
   await loadMasterData();
-  loadTodayStats();
 });
 
 // ===== マスタデータ読み込み =====
@@ -213,6 +210,23 @@ function renderProducts() {
         <div class="tile-dose">${group.length}種類の用量</div>
       </div>`;
     }).join("");
+}
+
+// ===== 検索クリア（×ボタン） =====
+function clearSearch() {
+  const input = document.getElementById("searchInput");
+  input.value = "";
+  state.searchQuery = "";
+  updateSearchClearBtn();
+  renderProducts();
+  input.focus();
+}
+
+// 入力があるときだけ×ボタンを表示
+function updateSearchClearBtn() {
+  const box = document.getElementById("searchBox");
+  if (!box) return;
+  box.classList.toggle("has-text", !!state.searchQuery);
 }
 
 // ===== 検索文字列の正規化（大小文字・半角/全角カナを吸収） =====
@@ -605,56 +619,67 @@ function renderReceiptHtml(forPrint, invoiceNo) {
 //   2. 記録成功 → 返ってきた番号で明細書（2枚）を組み立て → 印刷 → 会計確定（カートクリア）
 //   3. 記録失敗 → 印刷しない（番号なし伝票・記録漏れを防ぐ）。内容は保持してやり直せる
 let isPrinting = false; // 二度押し防止
+
+// 印刷ロックを解除（ボタンを再びクリック可能に戻す）
+function releasePrintLock() {
+  isPrinting = false;
+  const printBtn = document.getElementById("printBtn");
+  if (printBtn) printBtn.disabled = false;
+}
+
 async function doPrint() {
   if (isPrinting) return;
   isPrinting = true;
   const printBtn = document.getElementById("printBtn");
   if (printBtn) printBtn.disabled = true;
 
+  // ---- 1. 先にGASへ記録（採番してもらう） ----
+  let result;
   try {
-    // ---- 1. 先にGASへ記録（採番してもらう） ----
-    const result = await sendToGAS();
-
-    if (!result.ok) {
-      // 記録できなかった → 印刷しない。内容は残す
-      showToast("記録できませんでした。印刷を中止しました（内容は保持）", "error");
-      return;
-    }
-
-    // ---- 2. 採番された番号で明細書（A5×2枚）を組み立て ----
-    const invoiceNo = result.invoiceNo;
-    state.lastInvoiceNo = invoiceNo;
-    const html1 = renderReceiptHtml(true, invoiceNo);
-    const html2 = renderReceiptHtml(true, invoiceNo);
-    document.getElementById("printArea").innerHTML = `
-      <div class="print-page">${html1}</div>
-      <div class="print-page">
-        <div class="print-watermark">控　え</div>
-        ${html2}
-      </div>
-    `;
-
-    // ---- 3. 印刷 → 会計確定 ----
-    setTimeout(() => {
-      window.print();
-      setTimeout(() => {
-        showToast("印刷＆スプシに記録しました（No. " + invoiceNo + "）");
-        addToTodayStats();
-        clearCart();
-        closeReceipt();
-        isPrinting = false;
-        if (printBtn) printBtn.disabled = false;
-      }, 500);
-    }, 200);
-    return; // 後始末は上の setTimeout 内で行う
-
+    result = await sendToGAS();
   } catch (e) {
-    showToast("印刷処理でエラー：" + e.message, "error");
+    showToast("記録処理でエラー：" + e.message, "error");
+    releasePrintLock();
+    return;
   }
 
-  // 失敗系でここに到達した場合のフラグ解除
-  isPrinting = false;
-  if (printBtn) printBtn.disabled = false;
+  if (!result.ok) {
+    // 記録できなかった → 印刷しない。内容は残す
+    showToast("記録できませんでした。印刷を中止しました（内容は保持）", "error");
+    releasePrintLock();
+    return;
+  }
+
+  // ---- 2. 採番された番号で明細書（A5×2枚）を組み立て ----
+  const invoiceNo = result.invoiceNo;
+  state.lastInvoiceNo = invoiceNo;
+  const html1 = renderReceiptHtml(true, invoiceNo);
+  const html2 = renderReceiptHtml(true, invoiceNo);
+  document.getElementById("printArea").innerHTML = `
+    <div class="print-page">${html1}</div>
+    <div class="print-page">
+      <div class="print-watermark">控　え</div>
+      ${html2}
+    </div>
+  `;
+
+  // ---- 3. 印刷 → 会計確定 ----
+  // 印刷ダイアログを開き、完了後にカートをクリアしてロックを解除する。
+  // どの経路でも最後に releasePrintLock() を必ず通すことで、ボタンが暗いまま固まるのを防ぐ。
+  setTimeout(() => {
+    try {
+      window.print();
+    } catch (e) {
+      showToast("印刷でエラー：" + e.message, "error");
+    } finally {
+      setTimeout(() => {
+        showToast("印刷＆スプシに記録しました（No. " + invoiceNo + "）");
+        clearCart();
+        closeReceipt();
+        releasePrintLock();
+      }, 500);
+    }
+  }, 200);
 }
 
 // ===== GASに送信 =====
@@ -700,68 +725,6 @@ async function sendToGAS() {
     showToast("記録エラー：" + e.message, "error");
     return { ok: false };
   }
-}
-
-// ===== 日計 =====
-function addToTodayStats() {
-  const { total } = recalc();
-  state.todaySales += total;
-  state.todayCount++;
-  state.todayItems.push({
-    time: new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }),
-    owner: document.getElementById("ownerName").value.trim(),
-    pet: document.getElementById("petName").value.trim(),
-    total: total
-  });
-  saveTodayStats();
-  renderTodayStats();
-}
-
-function loadTodayStats() {
-  // localStorageは禁止なので、起動ごとに0スタート（運用上、1日1端末1セッションを想定）
-  // 必要なら GAS から本日分を取得する処理に拡張可
-  renderTodayStats();
-}
-
-function saveTodayStats() {
-  // 同上
-}
-
-function renderTodayStats() {
-  document.getElementById("todaySales").textContent = "¥" + state.todaySales.toLocaleString();
-  document.getElementById("todayCount").textContent = state.todayCount;
-}
-
-function showSummary() {
-  const body = document.getElementById("summaryBody");
-  if (state.todayItems.length === 0) {
-    body.innerHTML = `<div style="text-align:center;color:var(--hint);padding:30px;">本日の売上記録はまだありません</div>`;
-  } else {
-    body.innerHTML = `
-      <div style="margin-bottom:14px;display:flex;justify-content:space-around;text-align:center;">
-        <div>
-          <div style="font-size:11px;color:var(--muted);">売上合計</div>
-          <div style="font-size:22px;font-weight:700;color:var(--green-dark);">¥${state.todaySales.toLocaleString()}</div>
-        </div>
-        <div>
-          <div style="font-size:11px;color:var(--muted);">件数</div>
-          <div style="font-size:22px;font-weight:700;color:var(--green-dark);">${state.todayCount} 件</div>
-        </div>
-      </div>
-      <div style="border-top:1px solid var(--border-soft);padding-top:10px;">
-        ${state.todayItems.map(it => `
-          <div style="padding:6px 0;border-bottom:1px solid var(--border-soft);font-size:12px;display:flex;justify-content:space-between;">
-            <span>${it.time}　${escapeHtml(it.owner)}様${it.pet ? `（${escapeHtml(it.pet)}）` : ""}</span>
-            <strong>¥${it.total.toLocaleString()}</strong>
-          </div>
-        `).join("")}
-      </div>
-    `;
-  }
-  document.getElementById("summaryModal").classList.remove("hidden");
-}
-function closeSummary() {
-  document.getElementById("summaryModal").classList.add("hidden");
 }
 
 // ===== カートクリア =====
