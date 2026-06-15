@@ -4,7 +4,9 @@
    ======================================== */
 
 // ===== 設定 =====
-const GAS_URL = "https://script.google.com/macros/s/AKfycbyhM8ddjir1GJdKhmYzuCW1879ZiEJAPlKRkM2aTGUc96NatJgpklfmF58CdxRvA050/exec"; // ← ここにGASのWebアプリURLを貼り付け
+// GAS のWebアプリURLは config.js（window.GAS_URL）で設定します。
+// 本体を差し替えてもURLが消えないよう、設定はこのファイルから分離しています。
+const GAS_URL = (typeof window !== "undefined" && window.GAS_URL) ? window.GAS_URL : "YOUR_GAS_URL_HERE";
 
 // ===== 状態 =====
 const state = {
@@ -16,9 +18,7 @@ const state = {
   searchQuery: "",
   currentDose: null,    // 用量モーダル選択中
   showFavoritesOnly: false, // お気に入りのみ表示
-  todaySales: 0,
-  todayCount: 0,
-  todayItems: []
+  lastInvoiceNo: null   // 直近の印刷でサーバ採番された伝票番号
 };
 
 const MAX_CART_ITEMS = 11; // 印刷の都合上、1会計の明細は11件まで
@@ -33,6 +33,7 @@ window.addEventListener("DOMContentLoaded", async () => {
   // 検索バー
   document.getElementById("searchInput").addEventListener("input", (e) => {
     state.searchQuery = e.target.value.trim();
+    updateSearchClearBtn();
     renderProducts();
   });
 
@@ -69,7 +70,6 @@ window.addEventListener("DOMContentLoaded", async () => {
 
   // データ読み込み
   await loadMasterData();
-  loadTodayStats();
 });
 
 // ===== マスタデータ読み込み =====
@@ -115,16 +115,34 @@ function setupUI() {
   const sel = document.getElementById("staffSelect");
   sel.innerHTML = state.staff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join("");
 
-  // カテゴリタブ
+  // カテゴリタブ（各タブにカテゴリ色を適用）
   const cats = ["全て", ...new Set(state.products.map(p => p.category).filter(Boolean))];
   const tabs = document.getElementById("categoryTabs");
-  tabs.innerHTML = cats.map(c =>
-    `<button class="cat-tab${c === state.activeCategory ? " active" : ""}" data-cat="${escapeHtml(c)}">${escapeHtml(c)}</button>`
-  ).join("");
+  tabs.innerHTML = cats.map(c => {
+    const col = (c === "全て") ? "#1a5c3a" : getCategoryColor(c, "");
+    const active = c === state.activeCategory;
+    return `<button class="cat-tab${active ? " active" : ""}" data-cat="${escapeHtml(c)}" data-color="${col}" style="--tab-color:${col}">${escapeHtml(c)}</button>`;
+  }).join("");
+  const applyTabStyle = (btn) => {
+    const col = btn.dataset.color;
+    if (btn.classList.contains("active")) {
+      btn.style.background = col;
+      btn.style.borderColor = col;
+      btn.style.color = "#fff";
+    } else {
+      btn.style.background = "var(--surface)";
+      btn.style.borderColor = col;
+      btn.style.color = col;
+    }
+  };
   tabs.querySelectorAll(".cat-tab").forEach(t => {
+    applyTabStyle(t);
     t.addEventListener("click", () => {
       state.activeCategory = t.dataset.cat;
-      tabs.querySelectorAll(".cat-tab").forEach(x => x.classList.toggle("active", x === t));
+      tabs.querySelectorAll(".cat-tab").forEach(x => {
+        x.classList.toggle("active", x === t);
+        applyTabStyle(x);
+      });
       renderProducts();
     });
   });
@@ -132,29 +150,27 @@ function setupUI() {
   renderProducts();
 }
 
-// お気に入りのみ表示の切り替え
-function toggleFavorites() {
-  state.showFavoritesOnly = !state.showFavoritesOnly;
-  const btn = document.getElementById("favToggleBtn");
-  if (btn) btn.classList.toggle("active", state.showFavoritesOnly);
-  renderProducts();
-}
+// ===== 商品グリッドの表示 =====
 function renderProducts() {
   const grid = document.getElementById("productGrid");
 
+  const q = state.searchQuery ? normalizeSearch(state.searchQuery) : "";
   let filtered = state.products.filter(p => {
-    if (state.activeCategory !== "全て" && p.category !== state.activeCategory) return false;
     if (state.showFavoritesOnly && !isFavorite(p)) return false;
-    if (state.searchQuery) {
-      const q = state.searchQuery.toLowerCase();
-      const target = (p.name + " " + (p.keywords || "") + " " + (p.subcategory || "") + " " + (p.modalGroup || "")).toLowerCase();
-      if (!target.includes(q)) return false;
+    if (q) {
+      // 検索中は常に全カテゴリ横断（タブ選択を無視）
+      const target = normalizeSearch(
+        (p.name || "") + " " + (p.keywords || "") + " " + (p.subcategory || "") + " " + (p.modalGroup || "")
+      );
+      return target.includes(q);
     }
+    // 非検索時はタブで絞り込み
+    if (state.activeCategory !== "全て" && p.category !== state.activeCategory) return false;
     return true;
   });
 
   // グループ化：モーダルグループ列が同じものを1タイルに束ねる（一本化）
-  // モーダルグループが空欄の行は、それぞれ単独タイル（キーをユニークにする）
+  // モーダルグループが空欄の行はそれぞれ単独タイル
   const groups = new Map();
   filtered.forEach(p => {
     const mg = (p.modalGroup || "").trim();
@@ -176,7 +192,7 @@ function renderProducts() {
       const fav = group.some(isFavorite) ? `<span class="tile-fav">★</span>` : "";
       const isMG = (p.modalGroup || "").trim() !== "";
 
-      // モーダルグループで束ねられている（複数行）：モーダルで区分選択
+      // モーダルグループで束ねられている（複数行）：区分選択モーダル
       if (isMG && group.length > 1) {
         return `<div class="product-tile" style="--tile-color:${color}" onclick="openDoseModalByGroup('${escapeHtml(p.modalGroup)}')">
           ${fav}
@@ -186,21 +202,17 @@ function renderProducts() {
         </div>`;
       }
 
-      // 単独行（モーダルグループなし、または束ね対象が1件のみ）
-      // 担当者選択フラグがあれば、タップで担当者モーダル → カート
+      // 単独行：担当者選択フラグがあればタップで担当者モーダル
       const needStaffPick = isStaffPick(p);
-      const clickAction = needStaffPick
-        ? `openStaffPickModal(${p.id})`
-        : `addToCartById(${p.id})`;
-
-      const doseLine = p.dose ? `<div class="tile-dose">${escapeHtml(p.dose)}</div>` : "";
-      const priceLine = `<div class="tile-price">¥${p.price.toLocaleString()}${unitSuffix(p.unit)}</div>`;
+      const clickAction = needStaffPick ? `openStaffPickModal(${p.id})` : `addToCartById(${p.id})`;
       const pickMark = needStaffPick ? `<span class="tile-staffpick">担</span>` : "";
+      const doseLine = p.dose ? `<div class="tile-dose">${escapeHtml(p.dose)}</div>` : "";
 
-      return `<div class="product-tile" style="--tile-color:${color}" onclick="${clickAction}">
+      return `<div class="product-tile" style="--tile-color:${color}" data-product-id="${p.id}" onclick="${clickAction}">
         ${fav}${pickMark}
         <div class="tile-name">${escapeHtml(p.name)}</div>
-        ${doseLine}${priceLine}
+        ${doseLine}
+        <div class="tile-price">¥${p.price.toLocaleString()}${unitSuffix(p.unit)}</div>
       </div>`;
     }).join("");
 }
@@ -210,21 +222,63 @@ function isFavorite(p) {
   const v = (p.favorite || "").toString().trim();
   return v !== "" && v !== "0" && v.toLowerCase() !== "false";
 }
-
-// 担当者選択フラグ判定（〇 のときのみ。？ は判断保留なので対象外）
+// 担当者選択フラグ判定（〇 のときのみ。？ は保留なので対象外）
 function isStaffPick(p) {
   return (p.staffPick || "").toString().trim() === "〇";
 }
-
 // 整数固定かどうか
 function isIntegerOnly(p) {
   return (p.qtyType || "").toString().trim() === "整数固定";
+}
+// お気に入りのみ表示の切り替え
+function toggleFavorites() {
+  state.showFavoritesOnly = !state.showFavoritesOnly;
+  const btn = document.getElementById("favToggleBtn");
+  if (btn) btn.classList.toggle("active", state.showFavoritesOnly);
+  renderProducts();
+}
+
+// ===== 検索クリア（×ボタン） =====
+function clearSearch() {
+  const input = document.getElementById("searchInput");
+  input.value = "";
+  state.searchQuery = "";
+  updateSearchClearBtn();
+  renderProducts();
+  input.focus();
+}
+
+// 入力があるときだけ×ボタンを表示
+function updateSearchClearBtn() {
+  const box = document.getElementById("searchBox");
+  if (!box) return;
+  box.classList.toggle("has-text", !!state.searchQuery);
+}
+
+// ===== 検索文字列の正規化（大小文字・半角/全角カナを吸収） =====
+function normalizeSearch(s) {
+  if (!s) return "";
+  let t = String(s).toLowerCase();
+  // NFKC で半角カナ→全角カナ・全角英数→半角英数に正規化
+  try { t = t.normalize("NFKC"); } catch (e) {}
+  // カタカナ→ひらがな（読み仮名のゆれを吸収）
+  t = t.replace(/[\u30A1-\u30F6]/g, c => String.fromCharCode(c.charCodeAt(0) - 0x60));
+  // 空白除去
+  return t.replace(/\s+/g, "");
 }
 
 // ===== 単位サフィックス（錠は省略、それ以外は「 /本」のように表示） =====
 function unitSuffix(unit) {
   if (!unit || unit === "錠") return "";
   return ` <span style="font-size:10px;color:var(--muted);font-weight:400;">/${escapeHtml(unit)}</span>`;
+}
+
+// ===== 数量＋単位の文字列（診療行為は単位を出さない、薬・物販は単位を出す） =====
+// 例）診療：「1」 / 薬・物販：「1錠」「2本」「20包」
+function qtyUnitText(item) {
+  const isCare = item.group === "診療";
+  if (isCare && !item.isPowder) return `${item.qty}`;
+  return `${item.qty}${item.unit || ""}`;
 }
 
 // ===== カテゴリ色の自動配色 =====
@@ -261,42 +315,6 @@ function addToCartById(productId) {
   addToCart(p, 1);
 }
 
-// 既存の同じ商品IDがあれば数量加算、なければ新規追加
-// staffRole: null（担当者選択なし）/ "vet"（獣医）/ "nurse"（看護師＝技術料0＋＊印）
-function addToCart(product, qty, staffRole) {
-  if (!canAddItem()) return;
-
-  staffRole = staffRole || null;
-  // 整数固定なら数量を整数に丸める
-  if (isIntegerOnly(product)) {
-    qty = Math.max(1, Math.round(qty));
-  }
-
-  // 担当者種別が異なる場合は別行扱い（同じ商品でも獣医分/看護師分を分ける）
-  const existing = state.cart.find(c =>
-    !c.isPowder && c.productId === product.id && c.staffRole === staffRole
-  );
-  if (existing) {
-    existing.qty = Math.round((existing.qty + qty) * 100) / 100;
-  } else {
-    state.cart.push({
-      itemId: itemIdCounter++,
-      productId: product.id,
-      isPowder: false,
-      name: product.name,
-      dose: product.dose || "",
-      category: product.category,
-      qty: qty,
-      price: product.price,
-      unit: product.unit || "錠",
-      qtyType: product.qtyType || "",
-      staffRole: staffRole,           // null/"vet"/"nurse"
-      isNurseMark: staffRole === "nurse" // ＊印フラグ
-    });
-  }
-  renderCart();
-}
-
 // 11件上限チェック
 function canAddItem() {
   if (state.cart.length >= MAX_CART_ITEMS) {
@@ -306,9 +324,52 @@ function canAddItem() {
   return true;
 }
 
+// 表示用の品名（用量＋看護師＊印を反映）
+function cartDispName(item) {
+  let n = item.dose ? `${item.name} ${item.dose}` : item.name;
+  if (item.isNurseMark) n += "＊";
+  return n;
+}
+
+// 既存の同じ商品IDがあれば数量加算、なければ新規追加
+// staffRole: null（担当者選択なし）/ "vet"（獣医）/ "nurse"（看護師＝技術料0＋＊印）
+function addToCart(product, qty, staffRole) {
+  staffRole = staffRole || null;
+  // 整数固定なら数量を整数に丸める
+  if (isIntegerOnly(product)) {
+    qty = Math.max(1, Math.round(qty));
+  }
+  // 担当者種別が異なる場合は別行扱い（同じ商品でも獣医分/看護師分を分ける）
+  const existing = state.cart.find(c =>
+    !c.isPowder && c.productId === product.id && c.staffRole === staffRole
+  );
+  if (existing) {
+    existing.qty = Math.round((existing.qty + qty) * 100) / 100;
+  } else {
+    if (!canAddItem()) return;
+    state.cart.push({
+      itemId: itemIdCounter++,
+      productId: product.id,
+      isPowder: false,
+      group: product.group || "診療",
+      name: product.name,
+      dose: product.dose || "",
+      category: product.category,
+      qty: qty,
+      price: product.price,
+      unit: product.unit || "錠",
+      qtyType: product.qtyType || "",
+      staffRole: staffRole,
+      isNurseMark: staffRole === "nurse"
+    });
+  }
+  renderCart();
+}
+
 // ===== 用量モーダル（モーダルグループ基準） =====
 let doseGroup = [];
 let pendingStaffPickProduct = null; // 担当者選択待ちの商品（2段階目用）
+let pendingQty = 1;
 
 function openDoseModalByGroup(modalGroup) {
   doseGroup = state.products.filter(p => (p.modalGroup || "").trim() === modalGroup.trim());
@@ -330,12 +391,10 @@ function openDoseModalByGroup(modalGroup) {
   document.getElementById("doseModal").classList.remove("hidden");
 }
 
-// 旧API互換（カテゴリ＋品名）。今後は使わないが念のため残す
+// 旧API互換（カテゴリ＋品名）。モーダルグループ経由に委譲
 function openDoseModal(category, name) {
   const grp = state.products.filter(p => p.category === category && p.name === name);
-  if (grp.length && grp[0].modalGroup) {
-    openDoseModalByGroup(grp[0].modalGroup);
-  }
+  if (grp.length && grp[0].modalGroup) openDoseModalByGroup(grp[0].modalGroup);
 }
 
 function selectDose(id) {
@@ -346,17 +405,13 @@ function selectDose(id) {
   updateDoseQtyLabel();
   updateDoseTotal();
 }
-
 function updateDoseQtyLabel() {
   const u = state.currentDose.unit || "錠";
   const intOnly = isIntegerOnly(state.currentDose);
-  const hint = intOnly ? "（整数のみ）" : "（小数OK：例 6.5）";
-  document.getElementById("doseQtyLabel").textContent = `${u}数${hint}`;
-  // 整数固定なら入力欄のstepを1に
+  document.getElementById("doseQtyLabel").textContent = `${u}数${intOnly ? "（整数のみ）" : "（小数OK：例 6.5）"}`;
   const qtyEl = document.getElementById("doseQty");
-  qtyEl.step = intOnly ? "1" : "0.5";
+  qtyEl.step = intOnly ? "1" : "0.25";
 }
-
 function updateDoseTotal() {
   if (!state.currentDose) return;
   let qty = parseFloat(document.getElementById("doseQty").value) || 0;
@@ -364,7 +419,6 @@ function updateDoseTotal() {
   const total = Math.round(state.currentDose.price * qty);
   document.getElementById("doseTotalAmount").textContent = "¥" + total.toLocaleString();
 }
-
 function confirmDose() {
   let qty = parseFloat(document.getElementById("doseQty").value) || 0;
   if (isIntegerOnly(state.currentDose)) qty = Math.round(qty);
@@ -387,16 +441,13 @@ function closeDoseModal() {
   document.getElementById("doseModal").classList.add("hidden");
 }
 
-// ===== 担当者選択モーダル（2段階目／単独タイルからの1段階） =====
-let pendingQty = 1;
-
-// 単独タイル（担当者選択フラグあり）から直接呼ぶ
+// ===== 担当者選択モーダル（獣医/看護師） =====
+// 単独タイル（担当者選択フラグあり）から直接
 function openStaffPickModal(productId) {
   const p = state.products.find(x => x.id == productId);
   if (!p) return;
   openStaffPickModalForProduct(p, 1);
 }
-
 // 商品＋数量を確定したうえで担当者種別を選ばせる
 function openStaffPickModalForProduct(product, qty) {
   if (!canAddItem()) return;
@@ -406,13 +457,11 @@ function openStaffPickModalForProduct(product, qty) {
     product.dose ? `${product.name}（${product.dose}）` : product.name;
   document.getElementById("staffPickModal").classList.remove("hidden");
 }
-
 function selectStaffRole(role) {
   if (!pendingStaffPickProduct) return;
   addToCart(pendingStaffPickProduct, pendingQty, role);
   closeStaffPickModal();
 }
-
 function closeStaffPickModal() {
   document.getElementById("staffPickModal").classList.add("hidden");
   pendingStaffPickProduct = null;
@@ -466,27 +515,24 @@ function confirmPowder() {
   renderCart();
 }
 
-// 表示用の品名（用量＋看護師＊印を反映）
-function cartDispName(item) {
-  let n = item.dose ? `${item.name} ${item.dose}` : item.name;
-  if (item.isNurseMark) n += "＊";
-  return n;
-}
-
 // ===== カートの表示 =====
 function renderCart() {
   const list = document.getElementById("cartList");
   if (state.cart.length === 0) {
-    list.innerHTML = `<div class="cart-empty">商品タイルをタップして<br>注文を追加してください</div>`;
-    closeEdit();
+    list.innerHTML = `<div class="cart-empty">商品タイルをタップして<br>診療内容を追加してください</div>`;
+    // ※ここで closeEdit() を呼ぶと closeEdit→renderCart→closeEdit... の無限再帰になる。
+    //   そのため編集パネルは直接閉じる（renderCart は呼ばない）。
+    state.selectedItemId = null;
+    document.getElementById("editPanel").classList.add("hidden");
   } else {
     list.innerHTML = state.cart.map(item => {
       const amount = Math.round(item.qty * item.price);
       const dispName = cartDispName(item);
       const cls = (item.isPowder ? "powder" : "") + (item.itemId === state.selectedItemId ? " selected" : "");
-      const detailLine = `${item.qty}${item.unit} × ¥${item.price.toLocaleString()}`;
+      const detailLine = `${qtyUnitText(item)} × ¥${item.price.toLocaleString()}`;
       return `
         <div class="cart-item ${cls}" onclick="selectCartItem(${item.itemId})">
+          <button class="cart-item-del" onclick="event.stopPropagation();removeCartItem(${item.itemId})" title="削除">×</button>
           <div class="cart-item-name">${escapeHtml(dispName)}</div>
           <div class="cart-item-detail">
             <span>${detailLine}</span>
@@ -511,7 +557,7 @@ function selectCartItem(itemId) {
   const dispName = cartDispName(item);
   document.getElementById("editPanelTitle").textContent = "編集中：" + dispName;
   document.getElementById("editQty").value = item.qty;
-  document.getElementById("editQtyUnit").textContent = item.unit;
+  document.getElementById("editQtyUnit").textContent = (item.group === "診療" && !item.isPowder) ? "" : item.unit;
   document.getElementById("editPrice").value = item.price;
   // 単価ラベル：粉薬の場合は「1包単価」、それ以外は「単価」
   const priceLabel = document.querySelectorAll("#editPanel .edit-row label")[1];
@@ -532,7 +578,6 @@ function applyEdit() {
   if (!item) return;
   let qty = parseFloat(document.getElementById("editQty").value) || 0;
   const priceInput = parseFloat(document.getElementById("editPrice").value) || 0;
-  // 整数固定の品目は整数に丸める
   if ((item.qtyType || "") === "整数固定") {
     qty = Math.max(0, Math.round(qty));
     document.getElementById("editQty").value = qty;
@@ -544,10 +589,16 @@ function applyEdit() {
 
 function deleteSelected() {
   if (!state.selectedItemId) return;
-  if (!confirm("この行を削除しますか？")) return;
-  state.cart = state.cart.filter(c => c.itemId !== state.selectedItemId);
-  state.selectedItemId = null;
-  document.getElementById("editPanel").classList.add("hidden");
+  removeCartItem(state.selectedItemId);
+}
+
+// 行の×ボタンから即削除（確認ダイアログなし）
+function removeCartItem(itemId) {
+  state.cart = state.cart.filter(c => c.itemId !== itemId);
+  if (state.selectedItemId === itemId) {
+    state.selectedItemId = null;
+    document.getElementById("editPanel").classList.add("hidden");
+  }
   renderCart();
 }
 
@@ -563,6 +614,8 @@ function recalc() {
   document.getElementById("taxDisp").textContent = "¥" + tax.toLocaleString();
   document.getElementById("totalDisp").textContent = "¥" + total.toLocaleString();
   document.getElementById("checkoutBtn").disabled = state.cart.length === 0;
+  const clearBtn = document.getElementById("clearAllBtn");
+  if (clearBtn) clearBtn.disabled = state.cart.length === 0;
   return { subtotal, tax, total };
 }
 
@@ -576,46 +629,37 @@ function openReceipt() {
     document.getElementById("ownerName").focus();
     return;
   }
-  document.getElementById("receiptPreview").innerHTML = renderReceiptHtml(false);
+  // プレビュー段階では伝票番号は未確定（印刷時にサーバが採番する）
+  document.getElementById("receiptPreview").innerHTML = renderReceiptHtml(false, null);
   document.getElementById("receiptModal").classList.remove("hidden");
 }
 function closeReceipt() {
   document.getElementById("receiptModal").classList.add("hidden");
 }
 
-function renderReceiptHtml(forPrint) {
+// invoiceNo: サーバ採番された確定番号。null のときは「印刷時に採番」と表示（プレビュー用）
+function renderReceiptHtml(forPrint, invoiceNo) {
   const { subtotal, tax, total } = recalc();
   const owner = document.getElementById("ownerName").value.trim();
   const pet = document.getElementById("petName").value.trim();
   const staff = document.getElementById("staffSelect").value;
   const date = document.getElementById("visitDate").value;
   const dateDisp = formatDate(date);
-  const invoiceNo = generateInvoiceNo(date);
+  const invoiceDisp = invoiceNo ? invoiceNo : "（印刷時に採番）";
 
   const items = state.cart.map(item => {
     const amount = Math.round(item.qty * item.price);
     const dispName = cartDispName(item);
-    if (item.isPowder) {
-      return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
-        <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
-          <span>${escapeHtml(dispName)}</span>
-          <span>¥${amount.toLocaleString()}</span>
-        </div>
-        <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
-          ${item.qty}${item.unit}
-        </div>
-      </div>`;
-    } else {
-      return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
-        <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
-          <span>${escapeHtml(dispName)}</span>
-          <span>¥${amount.toLocaleString()}</span>
-        </div>
-        <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
-          ${item.qty}${item.unit} × ¥${item.price.toLocaleString()}
-        </div>
-      </div>`;
-    }
+    // 粉薬も通常薬と同じく「数量＋単位 × 単価」を表示する
+    return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
+      <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
+        <span>${escapeHtml(dispName)}</span>
+        <span>¥${amount.toLocaleString()}</span>
+      </div>
+      <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
+        ${qtyUnitText(item)} × ¥${item.price.toLocaleString()}
+      </div>
+    </div>`;
   }).join("");
 
   if (forPrint) {
@@ -623,7 +667,7 @@ function renderReceiptHtml(forPrint) {
       <div class="print-title">明　細　書</div>
       <div class="print-meta">
         <span>発行日：${dateDisp}</span>
-        <span>No. ${invoiceNo}</span>
+        <span>No. ${invoiceDisp}</span>
       </div>
       <div class="print-meta">
         <span>担当：${escapeHtml(staff)}</span>
@@ -650,7 +694,7 @@ function renderReceiptHtml(forPrint) {
     return `
       <div class="receipt-title">明　細　書</div>
       <div class="receipt-meta">
-        <div class="receipt-meta-row"><span>発行日：${dateDisp}</span><span>No. ${invoiceNo}</span></div>
+        <div class="receipt-meta-row"><span>発行日：${dateDisp}</span><span>No. ${invoiceDisp}</span></div>
         <div class="receipt-meta-row"><span>担当：${escapeHtml(staff)}</span><span></span></div>
       </div>
       <div class="receipt-customer">${escapeHtml(owner)} 様${pet ? `（${escapeHtml(pet)} ちゃん）` : ""}</div>
@@ -676,10 +720,35 @@ function renderReceiptHtml(forPrint) {
 }
 
 // ===== 印刷＋記録 =====
+// 【サーバ採番版の流れ】
+//   1. まずGASに記録 → サーバが伝票番号を採番して返す
+//   2. 記録成功 → 返ってきた番号で明細書（2枚）を組み立て → 印刷 → 会計確定（カートクリア）
+//   3. 記録失敗 → 印刷しない（番号なし伝票・記録漏れを防ぐ）。内容は保持してやり直せる
+//
+// ※二度押し防止のためにボタンを disabled にする処理は入れない。
+//   disabled が解除されずボタンが固まる事故のほうが現場で困るため。
+//   二重記録の本対策は A-2（client_id をGAS側で重複検出）に委ねる。
 async function doPrint() {
-  // 印刷エリアを2枚分組み立て
-  const html1 = renderReceiptHtml(true);
-  const html2 = renderReceiptHtml(true);
+  // ---- 1. 先にGASへ記録（採番してもらう） ----
+  let result;
+  try {
+    result = await sendToGAS();
+  } catch (e) {
+    showToast("記録処理でエラー：" + e.message, "error");
+    return;
+  }
+
+  if (!result.ok) {
+    // 記録できなかった → 印刷しない。内容は残す
+    showToast("記録できませんでした。印刷を中止しました（内容は保持）", "error");
+    return;
+  }
+
+  // ---- 2. 採番された番号で明細書（A5×2枚）を組み立て ----
+  const invoiceNo = result.invoiceNo;
+  state.lastInvoiceNo = invoiceNo;
+  const html1 = renderReceiptHtml(true, invoiceNo);
+  const html2 = renderReceiptHtml(true, invoiceNo);
   document.getElementById("printArea").innerHTML = `
     <div class="print-page">${html1}</div>
     <div class="print-page">
@@ -688,43 +757,41 @@ async function doPrint() {
     </div>
   `;
 
-  // GASに記録（送信失敗してもプリントは進める）
-  const recordResult = await sendToGAS();
+  showToast("スプシに記録しました（No. " + invoiceNo + "）");
 
-  // 印刷
+  // ---- 3. 印刷 ----
+  // 印刷内容は既に printArea に書き込み済みなので、
+  // この後にカートをクリアしても印刷物には影響しない。
+  window.print();
+
+  // ---- 4. 会計確定（カートクリア） ----
+  // 印刷ダイアログを閉じた後に実行されるよう、わずかに遅延させる。
   setTimeout(() => {
-    window.print();
-    // 印刷後にカートクリア
-    setTimeout(() => {
-      if (recordResult) {
-        showToast("印刷＆スプシに記録しました");
-        addToTodayStats();
-      }
-      clearCart();
-      closeReceipt();
-    }, 500);
-  }, 200);
+    clearCart();
+    closeReceipt();
+  }, 300);
 }
 
 // ===== GASに送信 =====
+// 戻り値： { ok: true, invoiceNo: "000123" } / { ok: false }
+// 伝票番号はサーバが採番するので、送信データには含めない。
 async function sendToGAS() {
   if (GAS_URL === "YOUR_GAS_URL_HERE") {
     showToast("デモモード：記録は保存されません", "error");
-    return false;
+    return { ok: false };
   }
 
   const { subtotal, tax, total } = recalc();
   const data = {
     action: "record",
     visitDate: document.getElementById("visitDate").value,
-    invoiceNo: generateInvoiceNo(document.getElementById("visitDate").value),
     staff: document.getElementById("staffSelect").value,
     ownerName: document.getElementById("ownerName").value.trim(),
     petName: document.getElementById("petName").value.trim(),
     items: state.cart.map(item => ({
-      name: item.dose ? `${item.name} ${item.dose}` : item.name,
+      name: cartDispName(item),
       qty: item.qty,
-      unit: item.unit,
+      unit: (item.group === "診療" && !item.isPowder) ? "" : item.unit,
       price: item.price,
       amount: Math.round(item.qty * item.price),
       isPowder: item.isPowder
@@ -740,77 +807,24 @@ async function sendToGAS() {
       body: JSON.stringify(data)
     });
     const json = await res.json();
-    if (json.result === "success") return true;
+    if (json.result === "success") {
+      return { ok: true, invoiceNo: json.invoiceNo || "" };
+    }
     throw new Error(json.message || "保存失敗");
   } catch (e) {
     showToast("記録エラー：" + e.message, "error");
-    return false;
+    return { ok: false };
   }
-}
-
-// ===== 日計 =====
-function addToTodayStats() {
-  const { total } = recalc();
-  state.todaySales += total;
-  state.todayCount++;
-  state.todayItems.push({
-    time: new Date().toLocaleTimeString("ja-JP", { hour: "2-digit", minute: "2-digit" }),
-    owner: document.getElementById("ownerName").value.trim(),
-    pet: document.getElementById("petName").value.trim(),
-    total: total
-  });
-  saveTodayStats();
-  renderTodayStats();
-}
-
-function loadTodayStats() {
-  // localStorageは禁止なので、起動ごとに0スタート（運用上、1日1端末1セッションを想定）
-  // 必要なら GAS から本日分を取得する処理に拡張可
-  renderTodayStats();
-}
-
-function saveTodayStats() {
-  // 同上
-}
-
-function renderTodayStats() {
-  document.getElementById("todaySales").textContent = "¥" + state.todaySales.toLocaleString();
-  document.getElementById("todayCount").textContent = state.todayCount;
-}
-
-function showSummary() {
-  const body = document.getElementById("summaryBody");
-  if (state.todayItems.length === 0) {
-    body.innerHTML = `<div style="text-align:center;color:var(--hint);padding:30px;">本日の売上記録はまだありません</div>`;
-  } else {
-    body.innerHTML = `
-      <div style="margin-bottom:14px;display:flex;justify-content:space-around;text-align:center;">
-        <div>
-          <div style="font-size:11px;color:var(--muted);">売上合計</div>
-          <div style="font-size:22px;font-weight:700;color:var(--green-dark);">¥${state.todaySales.toLocaleString()}</div>
-        </div>
-        <div>
-          <div style="font-size:11px;color:var(--muted);">件数</div>
-          <div style="font-size:22px;font-weight:700;color:var(--green-dark);">${state.todayCount} 件</div>
-        </div>
-      </div>
-      <div style="border-top:1px solid var(--border-soft);padding-top:10px;">
-        ${state.todayItems.map(it => `
-          <div style="padding:6px 0;border-bottom:1px solid var(--border-soft);font-size:12px;display:flex;justify-content:space-between;">
-            <span>${it.time}　${escapeHtml(it.owner)}様${it.pet ? `（${escapeHtml(it.pet)}）` : ""}</span>
-            <strong>¥${it.total.toLocaleString()}</strong>
-          </div>
-        `).join("")}
-      </div>
-    `;
-  }
-  document.getElementById("summaryModal").classList.remove("hidden");
-}
-function closeSummary() {
-  document.getElementById("summaryModal").classList.add("hidden");
 }
 
 // ===== カートクリア =====
+// 全消去ボタン（破壊的なので確認あり）
+function clearAll() {
+  if (state.cart.length === 0) return;
+  if (!confirm("入力中の診療内容をすべて消去しますか？")) return;
+  clearCart();
+}
+
 function clearCart() {
   state.cart = [];
   state.selectedItemId = null;
@@ -829,12 +843,6 @@ function formatDate(iso) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
   return `${y}年${parseInt(m)}月${parseInt(d)}日`;
-}
-function generateInvoiceNo(dateStr) {
-  if (!dateStr) dateStr = new Date().toISOString().slice(0, 10);
-  const ymd = dateStr.replace(/-/g, "").slice(2);
-  const seq = String(state.todayCount + 1).padStart(3, "0");
-  return ymd + "-" + seq;
 }
 
 function setConnStatus(level, text) {
@@ -856,16 +864,18 @@ function showToast(msg, type) {
   setTimeout(() => t.remove(), 3000);
 }
 
-// ===== デモデータ（GAS未接続時の動作確認用・16列新構造） =====
+// ===== デモデータ（GAS未接続時の動作確認用） =====
 function getDemoStaff() {
   return [
-    { id: 1, name: "佐藤 院長" },
-    { id: 2, name: "田中 副院長" },
-    { id: 3, name: "山本 獣医師" }
+    { id: 1, name: "南繁" },
+    { id: 2, name: "辻松淳二" },
+    { id: 3, name: "腰原あすか" },
+    { id: 4, name: "城戸大樹" },
+    { id: 5, name: "中出哲也" },
+    { id: 6, name: "要田正治" }
   ];
 }
-function P(o) {
-  // デモ用の補完ヘルパ（不足キーをデフォルトで埋める）
+function _dp(o) {
   return Object.assign({
     group: "診療", subcategory: "", modalGroup: "", dose: "",
     unit: "錠", qtyType: "", gigi: 0, staffPick: "", favorite: "",
@@ -874,30 +884,28 @@ function P(o) {
 }
 function getDemoProducts() {
   return [
-    // 初診料：モーダルグループ「初診料」で束ね（区分で単価が変わる・パターンX）
-    P({ id: 1, category: "診察", subcategory: "診察料", name: "初診料", modalGroup: "初診料", dose: "昼", price: 1000, gigi: 1000, keywords: "ｼｮｼﾝ", favorite: "1", order: 10 }),
-    P({ id: 2, category: "診察", subcategory: "診察料", name: "初診料（夜間）", modalGroup: "初診料", dose: "夜間", price: 2000, gigi: 2000, keywords: "ﾔｶﾝ ｼｮｼﾝ", order: 11 }),
-    P({ id: 3, category: "診察", subcategory: "診察料", name: "初診料（深夜）", modalGroup: "初診料", dose: "深夜", price: 4000, gigi: 4000, keywords: "ｼﾝﾔ ｼｮｼﾝ", order: 12 }),
-    P({ id: 4, category: "診察", subcategory: "診察料", name: "再診", price: 500, gigi: 500, keywords: "ｻｲｼﾝ", favorite: "1", order: 13 }),
+    // 初診料：モーダルグループで束ね（区分で単価が変わる）
+    _dp({ id: 1, category: "診察", subcategory: "診察料", name: "初診料", modalGroup: "初診料", dose: "昼", price: 1000, gigi: 1000, keywords: "ｼｮｼﾝ", favorite: "1", order: 10 }),
+    _dp({ id: 2, category: "診察", subcategory: "診察料", name: "初診料（夜間）", modalGroup: "初診料", dose: "夜間", price: 2000, gigi: 2000, keywords: "ﾔｶﾝ ｼｮｼﾝ", order: 11 }),
+    _dp({ id: 3, category: "診察", subcategory: "診察料", name: "初診料（深夜）", modalGroup: "初診料", dose: "深夜", price: 4000, gigi: 4000, keywords: "ｼﾝﾔ ｼｮｼﾝ", order: 12 }),
+    _dp({ id: 4, category: "診察", subcategory: "診察料", name: "再診", price: 500, gigi: 500, keywords: "ｻｲｼﾝ", favorite: "1", order: 13 }),
 
-    // 爪切り：モーダルグループ「爪切り」＋担当者選択フラグ（2段階モーダル・パターンX×Y）
-    P({ id: 130, category: "処置", name: "爪切り", modalGroup: "爪切り", dose: "通常", price: 500, gigi: 500, staffPick: "〇", keywords: "ﾂﾒｷﾘ", favorite: "1", order: 410 }),
-    P({ id: 131, category: "処置", name: "爪切り", modalGroup: "爪切り", dose: "中型犬以上・難しい", price: 1000, gigi: 1000, staffPick: "〇", keywords: "ﾂﾒｷﾘ", order: 411 }),
+    // 爪切り：モーダルグループ＋担当者選択フラグ（2段階モーダル）
+    _dp({ id: 130, category: "処置", name: "爪切り", modalGroup: "爪切り", dose: "通常", price: 500, gigi: 500, staffPick: "〇", keywords: "ﾂﾒｷﾘ", favorite: "1", order: 410 }),
+    _dp({ id: 131, category: "処置", name: "爪切り", modalGroup: "爪切り", dose: "中型犬以上・難しい", price: 1000, gigi: 1000, staffPick: "〇", keywords: "ﾂﾒｷﾘ", order: 411 }),
 
-    // 投薬：単独タイル＋担当者選択フラグ（1段階で担当者モーダル・パターンYのみ）
-    P({ id: 134, category: "処置", name: "投薬", price: 500, gigi: 500, staffPick: "〇", keywords: "ﾄｳﾔｸ", order: 420 }),
-
-    // ダニ除去：単独＋担当者選択
-    P({ id: 189, category: "処置", name: "ダニ除去", price: 500, gigi: 500, staffPick: "〇", keywords: "ﾀﾞﾆ", order: 430 }),
+    // 投薬・ダニ除去：単独＋担当者選択フラグ（1段階で担当者モーダル）
+    _dp({ id: 134, category: "処置", name: "投薬", price: 500, gigi: 500, staffPick: "〇", keywords: "ﾄｳﾔｸ", order: 420 }),
+    _dp({ id: 189, category: "処置", name: "ダニ除去", price: 500, gigi: 500, staffPick: "〇", keywords: "ﾀﾞﾆ", order: 430 }),
 
     // 通常の単独項目
-    P({ id: 100, category: "検査", subcategory: "血液検査", name: "血液検査Aセット", price: 4500, gigi: 2000, keywords: "ｹﾂｴｷ", order: 250 }),
-    P({ id: 350, category: "その他", subcategory: "文書料", name: "診断書", price: 1000, gigi: 1000, keywords: "ｼﾝﾀﾞﾝｼｮ", order: 730 }),
+    _dp({ id: 100, category: "検査", subcategory: "血液検査", name: "血液検査Aセット", price: 4500, gigi: 2000, keywords: "ｹﾂｴｷ", order: 250 }),
+    _dp({ id: 350, category: "その他", subcategory: "文書料", name: "診断書", price: 1000, gigi: 1000, keywords: "ｼﾝﾀﾞﾝｼｮ", order: 730 }),
 
-    // 薬・物販系（数量タイプの確認用）
-    P({ id: 521, group: "薬・物販", category: "処方薬（錠剤・カプセル）", subcategory: "抗生剤", name: "ケフレックスカプセル", unit: "Cap", qtyType: "小数OK", price: 110, keywords: "ｹﾌﾚｯｸｽ", order: 521 }),
-    P({ id: 600, group: "薬・物販", category: "処方薬（液剤・シロップ）", name: "ネオドパゾール液", unit: "㎖", qtyType: "小数OK", price: 15, keywords: "ﾈｵﾄﾞﾊﾟ", order: 600 }),
-    P({ id: 650, group: "薬・物販", category: "処方薬（外用・軟膏）", name: "ヒビクス軟膏", unit: "本", qtyType: "整数固定", price: 1200, keywords: "ﾋﾋﾞｸｽ", favorite: "1", order: 650 }),
-    P({ id: 800, group: "薬・物販", category: "消耗品・医療材料", name: "エリザベスカラー", unit: "個", qtyType: "整数固定", price: 800, keywords: "ｴﾘｶﾗ", order: 800 })
+    // 薬・物販（数量タイプ確認用）
+    _dp({ id: 521, group: "薬・物販", category: "処方薬（錠剤・カプセル）", subcategory: "抗生剤", name: "ケフレックスカプセル", unit: "Cap", qtyType: "小数OK", price: 110, keywords: "ｹﾌﾚｯｸｽ", order: 521 }),
+    _dp({ id: 600, group: "薬・物販", category: "処方薬（液剤・シロップ）", name: "ネオドパゾール液", unit: "㎖", qtyType: "小数OK", price: 15, keywords: "ﾈｵﾄﾞﾊﾟ", order: 600 }),
+    _dp({ id: 650, group: "薬・物販", category: "処方薬（外用・軟膏）", name: "ヒビクス軟膏", unit: "本", qtyType: "整数固定", price: 1200, keywords: "ﾋﾋﾞｸｽ", favorite: "1", order: 650 }),
+    _dp({ id: 800, group: "薬・物販", category: "消耗品・医療材料", name: "エリザベスカラー", unit: "個", qtyType: "整数固定", price: 800, keywords: "ｴﾘｶﾗ", order: 800 })
   ];
 }
