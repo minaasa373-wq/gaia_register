@@ -4,7 +4,7 @@
    ======================================== */
 
 // ===== 設定 =====
-const GAS_URL = "YOUR_GAS_URL_HERE"; // ← ここにGASのWebアプリURLを貼り付け
+const GAS_URL = "https://script.google.com/macros/s/AKfycbyhM8ddjir1GJdKhmYzuCW1879ZiEJAPlKRkM2aTGUc96NatJgpklfmF58CdxRvA050/exec"; // ← ここにGASのWebアプリURLを貼り付け
 
 // ===== 状態 =====
 const state = {
