@@ -1,6 +1,7 @@
 /* ========================================
    ガイア動物病院 レジシステム
    メインロジック
+   ── 第2弾（記録・会計系）反映済み
    ======================================== */
 
 // ===== 設定 =====
@@ -22,6 +23,7 @@ const state = {
 };
 
 const MAX_CART_ITEMS = 11; // 印刷の都合上、1会計の明細は11件まで
+const MAX_STAFF = 4;       // 【第2弾】担当獣医は最大4人
 
 let itemIdCounter = 1;
 
@@ -111,9 +113,8 @@ async function loadMasterData() {
 
 // ===== UI初期化 =====
 function setupUI() {
-  // 担当者プルダウン
-  const sel = document.getElementById("staffSelect");
-  sel.innerHTML = state.staff.map(s => `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`).join("");
+  // 【第2弾】担当者を複数追加UIとして初期化（1行目）
+  initStaffArea();
 
   // カテゴリタブ（各タブにカテゴリ色を適用）
   const cats = ["全て", ...new Set(state.products.map(p => p.category).filter(Boolean))];
@@ -148,6 +149,81 @@ function setupUI() {
   });
 
   renderProducts();
+}
+
+// ===== 【第2弾】担当獣医 複数追加UI =====
+// staffArea に select を動的に追加/削除。最大4人。1人目は×ボタンなし。
+function initStaffArea() {
+  const area = document.getElementById("staffArea");
+  area.innerHTML = "";
+  buildStaffRow(area, 0, false); // 1人目（削除不可）
+  updateAddStaffBtn();
+}
+
+function buildStaffRow(container, idx, removable) {
+  const row = document.createElement("div");
+  row.className = "staff-row";
+  row.dataset.idx = idx;
+
+  const sel = document.createElement("select");
+  sel.className = "staff-select";
+  sel.innerHTML = state.staff.map(s =>
+    `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`
+  ).join("");
+  row.appendChild(sel);
+
+  if (removable) {
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn-remove-staff";
+    delBtn.textContent = "×";
+    delBtn.title = "この担当を削除";
+    delBtn.onclick = () => {
+      row.remove();
+      updateAddStaffBtn();
+    };
+    row.appendChild(delBtn);
+  }
+
+  container.appendChild(row);
+}
+
+function addStaffRow() {
+  const area = document.getElementById("staffArea");
+  const currentCount = area.querySelectorAll(".staff-row").length;
+  if (currentCount >= MAX_STAFF) return;
+  buildStaffRow(area, currentCount, true); // 2人目以降は削除可
+  updateAddStaffBtn();
+}
+
+function updateAddStaffBtn() {
+  const area = document.getElementById("staffArea");
+  const btn = document.getElementById("addStaffBtn");
+  if (!btn) return;
+  const currentCount = area.querySelectorAll(".staff-row").length;
+  btn.style.display = currentCount >= MAX_STAFF ? "none" : "";
+}
+
+// 全担当獣医の名前をカンマ区切りで返す（1人なら名前だけ）
+function getSelectedStaff() {
+  const area = document.getElementById("staffArea");
+  const selects = area.querySelectorAll(".staff-select");
+  const names = [];
+  selects.forEach(sel => {
+    const v = sel.value.trim();
+    if (v) names.push(v);
+  });
+  return names.join(",");
+}
+
+// 担当人数を返す
+function getStaffCount() {
+  const area = document.getElementById("staffArea");
+  return area.querySelectorAll(".staff-row").length;
+}
+
+// 担当者UIを1人にリセット（会計確定後）
+function resetStaffArea() {
+  initStaffArea();
 }
 
 // ===== 商品グリッドの表示 =====
@@ -360,10 +436,37 @@ function addToCart(product, qty, staffRole) {
       unit: product.unit || "錠",
       qtyType: product.qtyType || "",
       staffRole: staffRole,
-      isNurseMark: staffRole === "nurse"
+      isNurseMark: staffRole === "nurse",
+      // 【第2弾】技術料計算に必要なマスタ元値を保持
+      masterPrice: product.price,  // 編集で変わらない元単価
+      gigi: product.gigi || 0      // マスタの技術料
     });
   }
   renderCart();
+}
+
+// ===== 【第2弾】技術料の計算 =====
+// 行ごとの技術料（設計確定式）
+function calcItemGigi(item) {
+  if (item.isNurseMark) return 0;                          // 看護師＊印は技術料0
+  if (!item.gigi || item.gigi === 0) return 0;             // 技術料なし
+  if (!item.masterPrice || item.masterPrice === 0) return 0; // ゼロ除算回避（体重連動式等）
+  return Math.floor(item.gigi * item.qty * (item.price / item.masterPrice));
+}
+
+// 会計全体の技術料合計
+function calcTotalGigi() {
+  let total = 0;
+  state.cart.forEach(item => { total += calcItemGigi(item); });
+  return total;
+}
+
+// 技術料スナップショットテキスト（行ごとの算出根拠を改行区切りで集約）
+function buildGigiSnapshot() {
+  return state.cart.map(item => {
+    const g = calcItemGigi(item);
+    return `${cartDispName(item)} | qty:${item.qty} | 単価:${item.price} | 元単価:${item.masterPrice || 0} | 元技:${item.gigi || 0} | 技:${g}`;
+  }).join("\n");
 }
 
 // ===== 用量モーダル（モーダルグループ基準） =====
@@ -509,7 +612,10 @@ function confirmPowder() {
     unit: "包",
     qtyType: "整数固定",
     staffRole: null,
-    isNurseMark: false
+    isNurseMark: false,
+    // 【第2弾】粉薬は技術料なし
+    masterPrice: 0,
+    gigi: 0
   });
   closePowderModal();
   renderCart();
@@ -622,6 +728,14 @@ function recalc() {
 // ===== 仕切書プレビュー =====
 function openReceipt() {
   if (state.cart.length === 0) return;
+
+  // 【第2弾】担当獣医の未選択チェック
+  const staffStr = getSelectedStaff();
+  if (!staffStr) {
+    showToast("担当獣医を選択してください", "error");
+    return;
+  }
+
   const ownerName = document.getElementById("ownerName").value.trim();
   const petName = document.getElementById("petName").value.trim();
   if (!ownerName) {
@@ -642,7 +756,8 @@ function renderReceiptHtml(forPrint, invoiceNo) {
   const { subtotal, tax, total } = recalc();
   const owner = document.getElementById("ownerName").value.trim();
   const pet = document.getElementById("petName").value.trim();
-  const staff = document.getElementById("staffSelect").value;
+  // 【第2弾】担当表示を getSelectedStaff() に差し替え（カンマ区切り→スペース区切りで表示）
+  const staff = getSelectedStaff().replace(/,/g, ", ");
   const date = document.getElementById("visitDate").value;
   const dateDisp = formatDate(date);
   const invoiceDisp = invoiceNo ? invoiceNo : "（印刷時に採番）";
@@ -785,7 +900,8 @@ async function sendToGAS() {
   const data = {
     action: "record",
     visitDate: document.getElementById("visitDate").value,
-    staff: document.getElementById("staffSelect").value,
+    // 【第2弾】担当者をgetSelectedStaff()に差し替え（カンマ区切り）
+    staff: getSelectedStaff(),
     ownerName: document.getElementById("ownerName").value.trim(),
     petName: document.getElementById("petName").value.trim(),
     items: state.cart.map(item => ({
@@ -798,7 +914,11 @@ async function sendToGAS() {
     })),
     subtotal: subtotal,
     tax: tax,
-    total: total
+    total: total,
+    // 【第2弾】技術料データを追加
+    staffCount: getStaffCount(),
+    gigiTotal: calcTotalGigi(),
+    gigiSnapshot: buildGigiSnapshot()
   };
 
   try {
@@ -831,6 +951,8 @@ function clearCart() {
   document.getElementById("ownerName").value = "";
   document.getElementById("petName").value = "";
   document.getElementById("editPanel").classList.add("hidden");
+  // 【第2弾】担当者プルダウンを1人にリセット
+  resetStaffArea();
   renderCart();
 }
 

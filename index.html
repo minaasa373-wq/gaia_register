@@ -96,6 +96,71 @@ button { cursor: pointer; border: none; background: none; }
 .app-header select { width: 110px; }
 .app-header input[type="date"] { width: 130px; }
 
+/* 【第2弾】担当獣医 複数追加UI */
+.staff-field-group {
+  align-items: flex-start;
+}
+.staff-area {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.staff-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.staff-row select.staff-select {
+  width: 110px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 13px;
+  background: var(--surface);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.staff-row select.staff-select:focus {
+  border-color: var(--green);
+}
+.btn-add-staff {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--green-light);
+  color: var(--green);
+  font-size: 16px;
+  font-weight: 700;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+  border: 1px solid var(--green);
+  flex-shrink: 0;
+  margin-top: 1px;
+}
+.btn-add-staff:hover {
+  background: var(--green);
+  color: #fff;
+}
+.btn-remove-staff {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fef0ec;
+  color: var(--warn);
+  font-size: 14px;
+  line-height: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.12s;
+  flex-shrink: 0;
+}
+.btn-remove-staff:hover {
+  background: var(--warn);
+  color: #fff;
+}
 .header-status {
   margin-left: auto;
   font-size: 11px;
@@ -1089,9 +1154,13 @@ button { cursor: pointer; border: none; background: none; }
   <!-- ヘッダー -->
   <header class="app-header">
     <div class="app-title">🐾 ガイア動物病院 レジ</div>
-    <div class="field-group">
+    <!-- 【第2弾】担当獣医 複数追加UI -->
+    <div class="field-group staff-field-group">
       <span class="field-label">担当</span>
-      <select id="staffSelect"></select>
+      <div class="staff-area" id="staffArea">
+        <!-- JSが動的にselect行を追加 -->
+      </div>
+      <button class="btn-add-staff" id="addStaffBtn" onclick="addStaffRow()" title="担当を追加（最大4人）">＋</button>
     </div>
     <div class="field-group">
       <span class="field-label">飼い主</span>
