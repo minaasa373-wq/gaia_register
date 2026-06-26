@@ -661,6 +661,60 @@ button { cursor: pointer; border: none; background: none; }
   padding: 0 4px;
   line-height: 1.4;
 }
+/* 【第3弾】計算式マーク */
+.tile-formula {
+  position: absolute;
+  bottom: 4px;
+  right: 5px;
+  font-size: 9px;
+  background: #C8553D;
+  color: #fff;
+  border-radius: 3px;
+  padding: 0 4px;
+  line-height: 1.4;
+}
+
+/* 【第3弾】計算補助モーダル */
+.formula-field {
+  margin: 10px 0;
+}
+.formula-field label {
+  display: block;
+  font-size: 13px;
+  font-weight: 600;
+  margin-bottom: 4px;
+  color: var(--text);
+}
+.formula-field input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+.formula-field input:focus {
+  border-color: var(--green);
+}
+.formula-result {
+  background: var(--green-light);
+  border-radius: 8px;
+  padding: 12px 14px;
+  margin-top: 12px;
+  text-align: center;
+}
+.formula-breakdown {
+  font-size: 12px;
+  color: var(--muted);
+  margin-bottom: 4px;
+}
+.formula-price {
+  font-size: 16px;
+  font-weight: 700;
+  color: var(--green-dark);
+}
 
 .empty-products {
   grid-column: 1 / -1;
@@ -1336,6 +1390,37 @@ button { cursor: pointer; border: none; background: none; }
     </div>
     <div class="modal-footer">
       <button class="btn-cancel" onclick="closeStaffPickModal()">キャンセル</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 【第3弾】計算補助モーダル ============ -->
+<div class="modal-overlay hidden" id="formulaModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">計算補助</span>
+      <button class="modal-close" onclick="closeFormulaModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="dose-info">
+        <div class="dose-product-name" id="formulaProductName"></div>
+      </div>
+      <div class="formula-field">
+        <label id="formulaInputLabel">体重（kg）</label>
+        <input type="number" id="formulaInput" min="0" step="0.1" placeholder="例：8" oninput="updateFormulaCalc()">
+      </div>
+      <div class="formula-field">
+        <label>量（調整可）</label>
+        <input type="number" id="formulaQty" min="0" step="0.1" oninput="updateFormulaPrice()">
+      </div>
+      <div class="formula-result">
+        <div class="formula-breakdown" id="formulaBreakdown"></div>
+        <div class="formula-price">算出料金：<strong id="formulaCalcPrice">¥0</strong></div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeFormulaModal()">キャンセル</button>
+      <button class="btn-confirm" onclick="confirmFormula()">注文に追加</button>
     </div>
   </div>
 </div>

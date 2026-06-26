@@ -278,14 +278,18 @@ function renderProducts() {
         </div>`;
       }
 
-      // 単独行：担当者選択フラグがあればタップで担当者モーダル
-      const needStaffPick = isStaffPick(p);
-      const clickAction = needStaffPick ? `openStaffPickModal(${p.id})` : `addToCartById(${p.id})`;
+      // 単独行：計算式 > 担当者選択 > 通常 の優先で分岐
+      const needFormula = hasFormula(p);          // 【第3弾】
+      const needStaffPick = !needFormula && isStaffPick(p);
+      const clickAction = needFormula ? `openFormulaModal(${p.id})`
+                        : needStaffPick ? `openStaffPickModal(${p.id})`
+                        : `addToCartById(${p.id})`;
       const pickMark = needStaffPick ? `<span class="tile-staffpick">担</span>` : "";
+      const formulaMark = needFormula ? `<span class="tile-formula">計</span>` : "";  // 【第3弾】
       const doseLine = p.dose ? `<div class="tile-dose">${escapeHtml(p.dose)}</div>` : "";
 
       return `<div class="product-tile" style="--tile-color:${color}" data-product-id="${p.id}" onclick="${clickAction}">
-        ${fav}${pickMark}
+        ${fav}${pickMark}${formulaMark}
         <div class="tile-name">${escapeHtml(p.name)}</div>
         ${doseLine}
         <div class="tile-price">¥${p.price.toLocaleString()}${unitSuffix(p.unit)}</div>
@@ -305,6 +309,25 @@ function isStaffPick(p) {
 // 整数固定かどうか
 function isIntegerOnly(p) {
   return (p.qtyType || "").toString().trim() === "整数固定";
+}
+// 【第3弾】計算式判定（メモ列に formula: で始まる文字列があれば対象）
+function hasFormula(p) {
+  return (p.memo || "").includes("formula:");
+}
+// メモ列から計算パラメータを抽出
+// 例: "formula:weight*400+1000" → { varName:"weight", coeff:400, base:1000 }
+// 例: "formula:ml*100+5000"     → { varName:"ml", coeff:100, base:5000 }
+function parseFormula(p) {
+  const memo = (p.memo || "");
+  const m = memo.match(/formula:(\w+)\*(\d+)\+(\d+)/);
+  if (!m) return null;
+  return { varName: m[1], coeff: Number(m[2]), base: Number(m[3]) };
+}
+// 計算式の入力ラベルを返す
+function formulaInputLabel(varName) {
+  if (varName === "weight") return "体重（kg）";
+  if (varName === "ml") return "使用量（ml）";
+  return varName;
 }
 // お気に入りのみ表示の切り替え
 function toggleFavorites() {
@@ -569,6 +592,111 @@ function closeStaffPickModal() {
   document.getElementById("staffPickModal").classList.add("hidden");
   pendingStaffPickProduct = null;
   pendingQty = 1;
+}
+
+// ===== 【第3弾】計算補助モーダル =====
+// メモ列に formula: がある商品をタップすると開く
+let formulaProduct = null;  // 計算補助対象の商品
+let formulaParams = null;   // { varName, coeff, base }
+
+function openFormulaModal(productId) {
+  const p = state.products.find(x => x.id == productId);
+  if (!p) return;
+  const params = parseFormula(p);
+  if (!params) {
+    // パース失敗→通常のカート追加にフォールバック
+    addToCartById(productId);
+    return;
+  }
+  formulaProduct = p;
+  formulaParams = params;
+
+  // モーダルの表示を設定
+  document.getElementById("formulaProductName").textContent =
+    p.dose ? `${p.name}（${p.dose}）` : p.name;
+  document.getElementById("formulaInputLabel").textContent = formulaInputLabel(params.varName);
+  document.getElementById("formulaInput").value = "";
+  document.getElementById("formulaInput").placeholder = params.varName === "weight" ? "例：8" : "例：3.5";
+  document.getElementById("formulaQty").value = "";
+  document.getElementById("formulaCalcPrice").textContent = "¥0";
+  document.getElementById("formulaBreakdown").textContent = "";
+  document.getElementById("formulaModal").classList.remove("hidden");
+  setTimeout(() => document.getElementById("formulaInput").focus(), 100);
+}
+
+// 入力値が変わったら推奨量と料金を自動計算
+function updateFormulaCalc() {
+  if (!formulaParams) return;
+  const inputVal = parseFloat(document.getElementById("formulaInput").value) || 0;
+  const { varName, coeff, base } = formulaParams;
+
+  // 推奨量 = 入力値そのまま（体重kgならkg分、mlならml分）
+  const recommendedQty = inputVal;
+  document.getElementById("formulaQty").value = recommendedQty || "";
+
+  recalcFormulaPrice();
+}
+
+// 量の手動調整でも料金を再計算
+function updateFormulaPrice() {
+  recalcFormulaPrice();
+}
+
+function recalcFormulaPrice() {
+  if (!formulaParams) return;
+  const qty = parseFloat(document.getElementById("formulaQty").value) || 0;
+  const { coeff, base } = formulaParams;
+  const price = Math.round(qty * coeff + base);
+
+  document.getElementById("formulaCalcPrice").textContent = "¥" + price.toLocaleString();
+  // 内訳表示
+  if (qty > 0) {
+    document.getElementById("formulaBreakdown").textContent =
+      `${qty} × ¥${coeff.toLocaleString()} + ¥${base.toLocaleString()} = ¥${price.toLocaleString()}`;
+  } else {
+    document.getElementById("formulaBreakdown").textContent = "";
+  }
+}
+
+function confirmFormula() {
+  if (!formulaProduct || !formulaParams) return;
+  const qty = parseFloat(document.getElementById("formulaQty").value) || 0;
+  if (qty <= 0) {
+    showToast("数量を入力してください", "error");
+    return;
+  }
+  const { coeff, base } = formulaParams;
+  const calcPrice = Math.round(qty * coeff + base);
+
+  if (!canAddItem()) return;
+
+  // カートに数量1×算出料金で追加（priceを算出値に差し替え）
+  state.cart.push({
+    itemId: itemIdCounter++,
+    productId: formulaProduct.id,
+    isPowder: false,
+    group: formulaProduct.group || "診療",
+    name: formulaProduct.name,
+    dose: formulaProduct.dose || "",
+    category: formulaProduct.category,
+    qty: 1,
+    price: calcPrice,
+    unit: formulaProduct.unit || "錠",
+    qtyType: formulaProduct.qtyType || "",
+    staffRole: null,
+    isNurseMark: false,
+    masterPrice: formulaProduct.price,
+    gigi: formulaProduct.gigi || 0
+  });
+
+  closeFormulaModal();
+  renderCart();
+}
+
+function closeFormulaModal() {
+  document.getElementById("formulaModal").classList.add("hidden");
+  formulaProduct = null;
+  formulaParams = null;
 }
 
 // ===== 粉薬モーダル =====
@@ -1028,6 +1156,10 @@ function getDemoProducts() {
     _dp({ id: 521, group: "薬・物販", category: "処方薬（錠剤・カプセル）", subcategory: "抗生剤", name: "ケフレックスカプセル", unit: "Cap", qtyType: "小数OK", price: 110, keywords: "ｹﾌﾚｯｸｽ", order: 521 }),
     _dp({ id: 600, group: "薬・物販", category: "処方薬（液剤・シロップ）", name: "ネオドパゾール液", unit: "㎖", qtyType: "小数OK", price: 15, keywords: "ﾈｵﾄﾞﾊﾟ", order: 600 }),
     _dp({ id: 650, group: "薬・物販", category: "処方薬（外用・軟膏）", name: "ヒビクス軟膏", unit: "本", qtyType: "整数固定", price: 1200, keywords: "ﾋﾋﾞｸｽ", favorite: "1", order: 650 }),
-    _dp({ id: 800, group: "薬・物販", category: "消耗品・医療材料", name: "エリザベスカラー", unit: "個", qtyType: "整数固定", price: 800, keywords: "ｴﾘｶﾗ", order: 800 })
+    _dp({ id: 800, group: "薬・物販", category: "消耗品・医療材料", name: "エリザベスカラー", unit: "個", qtyType: "整数固定", price: 800, keywords: "ｴﾘｶﾗ", order: 800 }),
+
+    // 【第3弾】計算補助（formula）デモ
+    _dp({ id: 901, category: "注射", name: "セフォベクリア", price: 0, gigi: 0, memo: "formula:weight*400+1000", keywords: "ｾﾌｫﾍﾞｸﾘｱ", order: 901 }),
+    _dp({ id: 905, category: "手術", name: "プロポフォール", price: 0, gigi: 0, memo: "formula:ml*100+5000", keywords: "ﾌﾟﾛﾎﾟﾌｫｰﾙ", order: 905 })
   ];
 }
