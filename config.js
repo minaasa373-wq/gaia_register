@@ -12,4 +12,4 @@
    ※ 未設定（YOUR_GAS_URL_HERE のまま）だとデモモードで動作します。
    ======================================== */
 
-window.GAS_URL = "https://script.google.com/macros/s/AKfycbyhM8ddjir1GJdKhmYzuCW1879ZiEJAPlKRkM2aTGUc96NatJgpklfmF58CdxRvA050/exec";
+window.GAS_URL = "https://script.google.com/macros/s/AKfycbxfJb-QSLUINPhxYqWeAN8gP2zDB7JVo4QdpSxlNoyhQb5dtZYpYKlP8n5PoCeOIZ7e/exec";
