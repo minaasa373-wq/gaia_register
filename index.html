@@ -741,6 +741,37 @@ button { cursor: pointer; border: none; background: none; }
   color: var(--green-dark);
 }
 
+/* 薬・物販 数量入力モーダル */
+.drug-qty-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.drug-qty-row input {
+  flex: 1;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  font-size: 16px;
+  outline: none;
+  transition: border-color 0.15s;
+  box-sizing: border-box;
+}
+.drug-qty-row input:focus {
+  border-color: var(--green);
+}
+.drug-qty-unit {
+  font-size: 15px;
+  font-weight: 600;
+  color: var(--text);
+  white-space: nowrap;
+}
+.dose-product-price {
+  font-size: 14px;
+  color: var(--muted);
+  margin-top: 2px;
+}
+
 .empty-products {
   grid-column: 1 / -1;
   padding: 40px;
@@ -1479,6 +1510,33 @@ button { cursor: pointer; border: none; background: none; }
     <div class="modal-footer">
       <button class="btn-cancel" onclick="closeFormulaModal()">キャンセル</button>
       <button class="btn-confirm" onclick="confirmFormula()">注文に追加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 薬・物販 数量入力モーダル ============ -->
+<div class="modal-overlay hidden" id="drugQtyModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">数量入力</span>
+      <button class="modal-close" onclick="closeDrugQtyModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="dose-info">
+        <div class="dose-product-name" id="drugQtyProductName"></div>
+        <div class="dose-product-price" id="drugQtyUnitPrice"></div>
+      </div>
+      <div class="formula-field">
+        <label id="drugQtyLabel">数量</label>
+        <div class="drug-qty-row">
+          <input type="number" id="drugQtyInput" min="0" step="0.25" placeholder="例：6.5">
+          <span class="drug-qty-unit" id="drugQtyUnit">錠</span>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeDrugQtyModal()">キャンセル</button>
+      <button class="btn-confirm" onclick="confirmDrugQty()">カートに追加</button>
     </div>
   </div>
 </div>

@@ -285,11 +285,13 @@ function renderProducts() {
         </div>`;
       }
 
-      // 単独行：計算式 > 担当者選択 > 通常 の優先で分岐
-      const needFormula = hasFormula(p);          // 【第3弾】
+      // 単独行：計算式 > 担当者選択 > 薬・物販数量入力 > 通常 の優先で分岐
+      const needFormula = hasFormula(p);
       const needStaffPick = !needFormula && isStaffPick(p);
+      const needDrugQty = !needFormula && !needStaffPick && p.group === "薬・物販";
       const clickAction = needFormula ? `openFormulaModal(${p.id})`
                         : needStaffPick ? `openStaffPickModal(${p.id})`
+                        : needDrugQty ? `openDrugQtyModal(${p.id})`
                         : `addToCartById(${p.id})`;
       const pickMark = needStaffPick ? `<span class="tile-staffpick">担</span>` : "";
       const formulaMark = needFormula ? `<span class="tile-formula">計</span>` : "";  // 【第3弾】
@@ -726,6 +728,46 @@ function closeFormulaModal() {
   document.getElementById("formulaModal").classList.add("hidden");
   formulaProduct = null;
   formulaParams = null;
+}
+
+// ===== 薬・物販 数量入力モーダル =====
+let drugQtyProduct = null;
+
+function openDrugQtyModal(productId) {
+  const p = state.products.find(x => x.id == productId);
+  if (!p) return;
+  drugQtyProduct = p;
+
+  const intOnly = isIntegerOnly(p);
+  document.getElementById("drugQtyProductName").textContent = p.name;
+  document.getElementById("drugQtyUnitPrice").textContent =
+    "¥" + p.price.toLocaleString() + (p.unit && p.unit !== "錠" ? " / " + p.unit : "");
+  document.getElementById("drugQtyLabel").textContent =
+    "数量" + (intOnly ? "（整数のみ）" : "（小数OK：例 6.5）");
+  const input = document.getElementById("drugQtyInput");
+  input.value = "";
+  input.step = intOnly ? "1" : "0.25";
+  input.placeholder = intOnly ? "例：3" : "例：6.5";
+  document.getElementById("drugQtyUnit").textContent = p.unit || "錠";
+  document.getElementById("drugQtyModal").classList.remove("hidden");
+  setTimeout(() => input.focus(), 100);
+}
+
+function confirmDrugQty() {
+  if (!drugQtyProduct) return;
+  let qty = parseFloat(document.getElementById("drugQtyInput").value) || 0;
+  if (isIntegerOnly(drugQtyProduct)) qty = Math.round(qty);
+  if (qty <= 0) {
+    showToast("数量を入力してください", "error");
+    return;
+  }
+  addToCart(drugQtyProduct, qty);
+  closeDrugQtyModal();
+}
+
+function closeDrugQtyModal() {
+  document.getElementById("drugQtyModal").classList.add("hidden");
+  drugQtyProduct = null;
 }
 
 // ===== 粉薬モーダル =====
