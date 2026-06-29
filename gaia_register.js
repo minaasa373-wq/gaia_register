@@ -871,7 +871,7 @@ function recalc() {
   state.cart.forEach(item => {
     subtotal += Math.round(item.qty * item.price);
   });
-  const tax = Math.floor(subtotal * 0.1);
+  const tax = Math.ceil(subtotal * 0.1);
   const total = subtotal + tax;
   document.getElementById("subtotalDisp").textContent = "¥" + subtotal.toLocaleString();
   document.getElementById("taxDisp").textContent = "¥" + tax.toLocaleString();
