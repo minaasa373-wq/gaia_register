@@ -506,6 +506,31 @@ button { cursor: pointer; border: none; background: none; }
   color: #fff;
   border-color: #c89c2e;
 }
+.btn-free {
+  padding: 7px 14px;
+  background: #e8f0fb;
+  border: 1px solid #8fb3df;
+  color: #2f5a8f;
+  border-radius: 5px;
+  font-size: 13px;
+  font-weight: 500;
+  white-space: nowrap;
+  transition: all 0.15s;
+}
+.btn-free:hover {
+  background: #2f5a8f;
+  color: #fff;
+  border-color: #2f5a8f;
+}
+.free-info {
+  font-size: 12px;
+  color: var(--muted);
+  background: #e8f0fb;
+  border: 1px solid #8fb3df;
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 10px;
+}
 .btn-fav-toggle {
   padding: 7px 14px;
   background: var(--surface);
@@ -1297,6 +1322,7 @@ button { cursor: pointer; border: none; background: none; }
           <button class="search-clear" id="searchClear" onclick="clearSearch()" title="検索をクリア">×</button>
         </div>
         <button class="btn-powder" onclick="openPowderModal()">＋ 粉薬を追加</button>
+        <button class="btn-free" onclick="openFreeModal()">＋ 自由入力</button>
         <button class="btn-fav-toggle" id="favToggleBtn" onclick="toggleFavorites()">★ お気に入り</button>
       </div>
       <div class="category-tabs" id="categoryTabs"></div>
@@ -1360,6 +1386,38 @@ button { cursor: pointer; border: none; background: none; }
     <div class="modal-footer">
       <button class="btn-cancel" onclick="closePowderModal()">キャンセル</button>
       <button class="btn-confirm" onclick="confirmPowder()">注文に追加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 自由入力モーダル ============ -->
+<div class="modal-overlay hidden" id="freeModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">自由入力</span>
+      <button class="modal-close" onclick="closeFreeModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="free-info">マスタにない項目を品名・単価・数量を入力して追加します。</div>
+      <div class="formula-field">
+        <label>品名</label>
+        <input type="text" id="freeName" placeholder="例：特別処置">
+      </div>
+      <div class="formula-field">
+        <label>単価（円・税抜）</label>
+        <input type="number" id="freePrice" min="0" placeholder="例：3000" oninput="updateFreeTotal()">
+      </div>
+      <div class="formula-field">
+        <label>数量</label>
+        <input type="number" id="freeQty" min="0" step="0.25" value="1" placeholder="例：1" oninput="updateFreeTotal()">
+      </div>
+      <div class="formula-result">
+        合計金額：<strong id="freeTotalDisp">¥0</strong>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeFreeModal()">キャンセル</button>
+      <button class="btn-confirm" onclick="confirmFree()">注文に追加</button>
     </div>
   </div>
 </div>

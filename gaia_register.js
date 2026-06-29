@@ -778,6 +778,60 @@ function confirmPowder() {
   renderCart();
 }
 
+// ===== 自由入力モーダル（マスタにない項目を追加） =====
+function openFreeModal() {
+  document.getElementById("freeName").value = "";
+  document.getElementById("freePrice").value = "";
+  document.getElementById("freeQty").value = "1";
+  document.getElementById("freeTotalDisp").textContent = "¥0";
+  document.getElementById("freeModal").classList.remove("hidden");
+  setTimeout(() => document.getElementById("freeName").focus(), 100);
+}
+function closeFreeModal() {
+  document.getElementById("freeModal").classList.add("hidden");
+}
+function updateFreeTotal() {
+  const price = parseFloat(document.getElementById("freePrice").value) || 0;
+  const qty = parseFloat(document.getElementById("freeQty").value) || 0;
+  const total = Math.round(price * qty);
+  document.getElementById("freeTotalDisp").textContent = "¥" + total.toLocaleString();
+}
+function confirmFree() {
+  const name = document.getElementById("freeName").value.trim();
+  const price = parseFloat(document.getElementById("freePrice").value);
+  const qty = parseFloat(document.getElementById("freeQty").value) || 1;
+  if (!name) {
+    showToast("品名を入力してください", "error");
+    return;
+  }
+  if (!price || price <= 0) {
+    showToast("単価を入力してください", "error");
+    return;
+  }
+  if (!canAddItem()) return;
+  state.cart.push({
+    itemId: itemIdCounter++,
+    productId: null,
+    isPowder: false,
+    isFree: true,
+    group: "診療",
+    name: name,
+    dose: "",
+    category: "その他",
+    subcategory: "",
+    qty: qty,
+    price: price,
+    unit: "",
+    qtyType: "",
+    staffRole: null,
+    isNurseMark: false,
+    masterPrice: 0,
+    gigi: 0
+  });
+  closeFreeModal();
+  renderCart();
+}
+
 // ===== カートの表示 =====
 function renderCart() {
   const list = document.getElementById("cartList");
