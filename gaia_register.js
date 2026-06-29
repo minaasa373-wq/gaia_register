@@ -261,7 +261,14 @@ function renderProducts() {
   }
 
   grid.innerHTML = Array.from(groups.values())
-    .sort((a, b) => (a[0].order || 9999) - (b[0].order || 9999))
+    .sort((a, b) => {
+      // 第一キー：group（診療を先、薬・物販を後）
+      const ga = a[0].group === "診療" ? 0 : 1;
+      const gb = b[0].group === "診療" ? 0 : 1;
+      if (ga !== gb) return ga - gb;
+      // 第二キー：表示順
+      return (a[0].order || 9999) - (b[0].order || 9999);
+    })
     .map(group => {
       const p = group[0];
       const color = getCategoryColor(p.category, p.color);
