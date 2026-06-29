@@ -522,6 +522,21 @@ function calcNonVaccineGigi() {
   return calcTotalGigi() - calcVaccineGigi();
 }
 
+// ワクチン種類別の件数を集計
+// 戻り値：[{ name: "犬5種ワクチン", count: 4 }, ...]（ワクチン品目があるものだけ）
+// 品名はマスタの品名（item.name）を使う。用量（dose）は含めない。
+function buildVaccineCounts() {
+  const counts = {};
+  state.cart.forEach(item => {
+    if (!isVaccineItem(item)) return;
+    const name = item.name;  // マスタ品名（「犬5種ワクチン」など）
+    const qty = item.qty || 0;
+    if (qty <= 0) return;
+    counts[name] = (counts[name] || 0) + qty;
+  });
+  return Object.keys(counts).map(name => ({ name: name, count: counts[name] }));
+}
+
 // ===== 用量モーダル（モーダルグループ基準） =====
 let doseGroup = [];
 let pendingStaffPickProduct = null; // 担当者選択待ちの商品（2段階目用）
@@ -1173,7 +1188,9 @@ async function sendToGAS() {
     gigiTotal: calcTotalGigi(),
     gigiNonVaccine: calcNonVaccineGigi(),
     gigiVaccine: calcVaccineGigi(),
-    gigiSnapshot: buildGigiSnapshot()
+    gigiSnapshot: buildGigiSnapshot(),
+    // ワクチン種類別件数（案3b）
+    vaccineCounts: buildVaccineCounts()
   };
 
   try {
