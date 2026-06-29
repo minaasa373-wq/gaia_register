@@ -461,6 +461,7 @@ function addToCart(product, qty, staffRole) {
       name: product.name,
       dose: product.dose || "",
       category: product.category,
+      subcategory: product.subcategory || "",  // ワクチン判定用
       qty: qty,
       price: product.price,
       unit: product.unit || "錠",
@@ -497,6 +498,26 @@ function buildGigiSnapshot() {
     const g = calcItemGigi(item);
     return `${cartDispName(item)} | qty:${item.qty} | 単価:${item.price} | 元単価:${item.masterPrice || 0} | 元技:${item.gigi || 0} | 技:${g}`;
   }).join("\n");
+}
+
+// ワクチン判定（サブカテゴリが「ワクチン」or「狂犬病ワクチン」かつ技術料>0）
+function isVaccineItem(item) {
+  const sub = (item.subcategory || "").trim();
+  return (sub === "ワクチン" || sub === "狂犬病ワクチン") && (item.gigi || 0) > 0;
+}
+
+// ワクチン技術料の合計
+function calcVaccineGigi() {
+  let total = 0;
+  state.cart.forEach(item => {
+    if (isVaccineItem(item)) total += calcItemGigi(item);
+  });
+  return total;
+}
+
+// 通常技術料の合計（ワクチン分を除外）
+function calcNonVaccineGigi() {
+  return calcTotalGigi() - calcVaccineGigi();
 }
 
 // ===== 用量モーダル（モーダルグループ基準） =====
@@ -686,6 +707,7 @@ function confirmFormula() {
     name: formulaProduct.name,
     dose: formulaProduct.dose || "",
     category: formulaProduct.category,
+    subcategory: formulaProduct.subcategory || "",
     qty: 1,
     price: calcPrice,
     unit: formulaProduct.unit || "錠",
@@ -1053,6 +1075,8 @@ async function sendToGAS() {
     // 【第2弾】技術料データを追加
     staffCount: getStaffCount(),
     gigiTotal: calcTotalGigi(),
+    gigiNonVaccine: calcNonVaccineGigi(),
+    gigiVaccine: calcVaccineGigi(),
     gigiSnapshot: buildGigiSnapshot()
   };
 
