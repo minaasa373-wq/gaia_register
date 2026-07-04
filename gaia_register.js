@@ -275,8 +275,18 @@ function renderProducts() {
       const fav = group.some(isFavorite) ? `<span class="tile-fav">★</span>` : "";
       const isMG = (p.modalGroup || "").trim() !== "";
 
-      // モーダルグループで束ねられている（複数行）：区分選択モーダル
+      // モーダルグループで束ねられている（複数行）：区分選択 or 複数選択モーダル
       if (isMG && group.length > 1) {
+        // 数量タイプに「複数選択」が入っているグループは複数選択モーダル
+        const isMultiPick = group.some(x => (x.qtyType || "").toString().trim() === "複数選択");
+        if (isMultiPick) {
+          return `<div class="product-tile" style="--tile-color:${color}" onclick="openMultiPickModal('${escapeHtml(p.modalGroup)}')">
+            ${fav}
+            <span class="tile-multidose">☑</span>
+            <div class="tile-name">${escapeHtml(p.modalGroup)}</div>
+            <div class="tile-dose">${group.length}項目・複数選択可</div>
+          </div>`;
+        }
         return `<div class="product-tile" style="--tile-color:${color}" onclick="openDoseModalByGroup('${escapeHtml(p.modalGroup)}')">
           ${fav}
           <span class="tile-multidose">▾</span>
@@ -610,6 +620,85 @@ function confirmDose() {
 }
 function closeDoseModal() {
   document.getElementById("doseModal").classList.add("hidden");
+}
+
+// ===== 複数選択モーダル（血液検査など：数量タイプ「複数選択」のグループ） =====
+let multiPickGroup = [];        // モーダルグループの全商品
+let multiPickSelected = new Set(); // 選択中の商品ID
+
+function openMultiPickModal(modalGroup) {
+  multiPickGroup = state.products.filter(p => (p.modalGroup || "").trim() === modalGroup.trim());
+  if (multiPickGroup.length === 0) return;
+  multiPickSelected = new Set();
+  document.getElementById("multiPickTitle").textContent = modalGroup;
+  renderMultiPickOptions();
+  updateMultiPickTotal();
+  document.getElementById("multiPickModal").classList.remove("hidden");
+}
+
+function renderMultiPickOptions() {
+  const opts = multiPickGroup.map(p => `
+    <div class="dose-opt${multiPickSelected.has(p.id) ? " selected" : ""}" onclick="toggleMultiPick(${p.id})">
+      <div class="dose-value">${escapeHtml(p.name)}</div>
+      <div class="dose-price">¥${p.price.toLocaleString()}</div>
+    </div>
+  `).join("");
+  document.getElementById("multiPickOptions").innerHTML = opts;
+}
+
+function toggleMultiPick(id) {
+  if (multiPickSelected.has(id)) {
+    multiPickSelected.delete(id);
+  } else {
+    multiPickSelected.add(id);
+  }
+  renderMultiPickOptions();
+  updateMultiPickTotal();
+}
+
+function updateMultiPickTotal() {
+  const sel = multiPickGroup.filter(p => multiPickSelected.has(p.id));
+  const total = sel.reduce((s, p) => s + (p.price || 0), 0);
+  document.getElementById("multiPickCount").textContent = sel.length;
+  document.getElementById("multiPickTotalAmount").textContent = "¥" + total.toLocaleString();
+}
+
+function confirmMultiPick() {
+  const sel = multiPickGroup.filter(p => multiPickSelected.has(p.id));
+  if (sel.length === 0) {
+    showToast("検査項目を選択してください", "error");
+    return;
+  }
+  if (!canAddItem()) return;
+  // 選択項目を1行に合算（品名は「・」区切りで連結、単価・技術料は合計）
+  const name = sel.map(p => p.name).join("・");
+  const price = sel.reduce((s, p) => s + (p.price || 0), 0);
+  const gigi = sel.reduce((s, p) => s + (p.gigi || 0), 0);
+  state.cart.push({
+    itemId: itemIdCounter++,
+    productId: null,
+    isPowder: false,
+    isMultiPick: true,
+    group: sel[0].group || "診療",
+    name: name,
+    dose: "",
+    category: sel[0].category,
+    subcategory: sel[0].subcategory || "",
+    qty: 1,
+    price: price,
+    unit: "",
+    qtyType: "整数固定",
+    staffRole: null,
+    isNurseMark: false,
+    masterPrice: price,  // 技術料の按分計算用（編集で単価が変われば技術料も比例）
+    gigi: gigi
+  });
+  closeMultiPickModal();
+  renderCart();
+}
+
+function closeMultiPickModal() {
+  document.getElementById("multiPickModal").classList.add("hidden");
 }
 
 // ===== 担当者選択モーダル（獣医/看護師） =====

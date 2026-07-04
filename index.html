@@ -1390,6 +1390,33 @@ button { cursor: pointer; border: none; background: none; }
   </div>
 </div>
 
+<!-- ============ 複数選択モーダル（血液検査など） ============ -->
+<div class="modal-overlay hidden" id="multiPickModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">検査項目を選択（複数可）</span>
+      <button class="modal-close" onclick="closeMultiPickModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="dose-info">
+        <div class="dose-product-name" id="multiPickTitle"></div>
+        <div class="dose-instruction">必要な項目をタップして選択してください（再タップで解除）</div>
+      </div>
+      <div class="dose-options" id="multiPickOptions"></div>
+      <div class="dose-qty-section">
+        <div class="dose-total">
+          選択中：<strong id="multiPickCount">0</strong>件　
+          合計：<strong id="multiPickTotalAmount">¥0</strong>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeMultiPickModal()">キャンセル</button>
+      <button class="btn-confirm" onclick="confirmMultiPick()">注文に追加</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 粉薬モーダル ============ -->
 <div class="modal-overlay hidden" id="powderModal">
   <div class="modal">
