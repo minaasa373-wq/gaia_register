@@ -432,9 +432,9 @@ function canAddItem() {
   return true;
 }
 
-// 表示用の品名（用量＋看護師＊印を反映）
+// 表示用の品名（品名のみ。用量(dose)は明細に出さない。看護師＊印は反映）
 function cartDispName(item) {
-  let n = item.dose ? `${item.name} ${item.dose}` : item.name;
+  let n = item.name;
   if (item.isNurseMark) n += "＊";
   return n;
 }
