@@ -301,9 +301,12 @@ function renderProducts() {
       }
 
       // 単独行：計算式 > 担当者選択 > 薬・物販数量入力 > 通常 の優先で分岐
+      // 薬・物販でも数量タイプ(H列)が空欄なら数量モーダルを出さずダイレクト追加
+      //（フード等：1タップ1個。3個なら3回タップの運用）
       const needFormula = hasFormula(p);
       const needStaffPick = !needFormula && isStaffPick(p);
-      const needDrugQty = !needFormula && !needStaffPick && p.group === "薬・物販";
+      const hasQtyType = (p.qtyType || "").toString().trim() !== "";
+      const needDrugQty = !needFormula && !needStaffPick && p.group === "薬・物販" && hasQtyType;
       const clickAction = needFormula ? `openFormulaModal(${p.id})`
                         : needStaffPick ? `openStaffPickModal(${p.id})`
                         : needDrugQty ? `openDrugQtyModal(${p.id})`
