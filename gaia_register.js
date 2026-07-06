@@ -18,7 +18,7 @@ const state = {
   activeCategory: "全て",
   searchQuery: "",
   currentDose: null,    // 用量モーダル選択中
-  showFavoritesOnly: false, // お気に入りのみ表示
+  showFavoritesOnly: false, // お気に入り優先表示（★ONでお気に入りを先頭に並べ替え。非表示にはしない）
   lastInvoiceNo: null   // 直近の印刷でサーバ採番された伝票番号
 };
 
@@ -232,7 +232,6 @@ function renderProducts() {
 
   const q = state.searchQuery ? normalizeSearch(state.searchQuery) : "";
   let filtered = state.products.filter(p => {
-    if (state.showFavoritesOnly && !isFavorite(p)) return false;
     if (q) {
       // 検索中は常に全カテゴリ横断（タブ選択を無視）
       const target = normalizeSearch(
@@ -262,6 +261,12 @@ function renderProducts() {
 
   grid.innerHTML = Array.from(groups.values())
     .sort((a, b) => {
+      // 第零キー：★ONのときはお気に入りを最優先で先頭へ（案A：グループ横断）
+      if (state.showFavoritesOnly) {
+        const fa = a.some(isFavorite) ? 0 : 1;
+        const fb = b.some(isFavorite) ? 0 : 1;
+        if (fa !== fb) return fa - fb;
+      }
       // 第一キー：group（診療を先、薬・物販を後）
       const ga = a[0].group === "診療" ? 0 : 1;
       const gb = b[0].group === "診療" ? 0 : 1;
@@ -348,7 +353,7 @@ function formulaInputLabel(varName) {
   if (varName === "ml") return "使用量（ml）";
   return varName;
 }
-// お気に入りのみ表示の切り替え
+// お気に入り優先表示の切り替え
 function toggleFavorites() {
   state.showFavoritesOnly = !state.showFavoritesOnly;
   const btn = document.getElementById("favToggleBtn");
