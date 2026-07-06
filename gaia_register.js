@@ -1158,13 +1158,12 @@ function renderReceiptHtml(forPrint, invoiceNo) {
       <div class="print-totals-row"><span>消費税(10%)</span><span>¥${tax.toLocaleString()}</span></div>
       <div class="print-totals-row grand"><span>合　計</span><span>¥${total.toLocaleString()}</span></div>
       <div class="print-thanks">
-        この度はご来院いただきありがとうございました。<br>
-        またのご来院を心よりお待ちしております。
+        お大事にしてください。
       </div>
       <div class="print-hospital-block">
         <div class="print-divider-solid"></div>
         <div class="print-hospital-name">ガイア動物病院</div>
-        <div class="print-hospital-info">〒069-1182 千歳市協和1914<br>Tel：0123-21-2552</div>
+        <div class="print-hospital-info">〒069-1182 千歳市協和1914<br>Tel：0123-21-2552<br>登録番号：T9430002048507</div>
       </div>
     `;
   } else {
@@ -1184,13 +1183,12 @@ function renderReceiptHtml(forPrint, invoiceNo) {
         <div class="receipt-totals-row grand"><span>合　計</span><span>¥${total.toLocaleString()}</span></div>
       </div>
       <div class="receipt-footer">
-        この度はご来院いただきありがとうございました。<br>
-        またのご来院を心よりお待ちしております。
+        お大事にしてください。
       </div>
       <div class="receipt-hospital-bottom">
         <div class="receipt-divider-solid"></div>
         <div class="receipt-hospital-name">ガイア動物病院</div>
-        <div class="receipt-hospital-info">〒069-1182 千歳市協和1914 / Tel：0123-21-2552</div>
+        <div class="receipt-hospital-info">〒069-1182 千歳市協和1914 / Tel：0123-21-2552 / 登録番号：T9430002048507</div>
       </div>
     `;
   }
