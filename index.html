@@ -860,6 +860,22 @@ button { cursor: pointer; border: none; background: none; }
 .btn-confirm:hover { background: var(--green-dark); }
 .btn-confirm:disabled { background: var(--hint); cursor: not-allowed; }
 
+/* ===== 印刷＋記録の処理中表示 ===== */
+.btn-busy { pointer-events: none; }  /* disabledに加えてタップ自体も透過させる保険 */
+.btn-spinner {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border: 2px solid rgba(255, 255, 255, 0.4);
+  border-top-color: #fff;
+  border-radius: 50%;
+  vertical-align: -2px;
+  animation: btn-spin 0.7s linear infinite;
+}
+@keyframes btn-spin {
+  to { transform: rotate(360deg); }
+}
+
 /* ===== 用量モーダル ===== */
 .dose-info {
   text-align: center;

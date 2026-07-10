@@ -1203,51 +1203,102 @@ function renderReceiptHtml(forPrint, invoiceNo) {
 //   2. 記録成功 → 返ってきた番号で明細書（2枚）を組み立て → 印刷 → 会計確定（カートクリア）
 //   3. 記録失敗 → 印刷しない（番号なし伝票・記録漏れを防ぐ）。内容は保持してやり直せる
 //
-// ※二度押し防止のためにボタンを disabled にする処理は入れない。
-//   disabled が解除されずボタンが固まる事故のほうが現場で困るため。
-//   二重記録の本対策は A-2（client_id をGAS側で重複検出）に委ねる。
+// 【二度押し防止（3〜4秒の処理中に連打→二重記録される実機事故への対策）】
+//   ・処理中フラグ isPrinting：処理中の再入を関数入り口で即ブロック
+//   ・ボタンを disabled ＋「⏳ 処理中…」表示に変更（視覚フィードバック）
+//   ・復帰は try...finally で保証（エラー・記録失敗・例外、どの経路でも必ず元に戻る）
+//   ・さらに保険として30秒タイマーで強制復帰（通信が無反応のまま固まった場合でも
+//     ボタンが永久に押せなくなる事故を防ぐ。正常時は finally が先に復帰させるので無害）
+//   ※サーバ側の重複検出（A-2）は導入しない方針。二重記録は手動チェック運用。
+
+let isPrinting = false;          // 処理中フラグ（再入ブロック用）
+let printBtnInsuranceTimer = null; // 強制復帰の保険タイマー
+
+// 印刷＋記録ボタンの処理中表示を切り替える
+function setPrintBtnBusy(busy) {
+  const btn = document.getElementById("printBtn");
+  if (!btn) return;
+  if (busy) {
+    // 元の表示を初回に退避（HTML側の文言変更にも追従できるようdatasetに保存）
+    if (!btn.dataset.defaultHtml) btn.dataset.defaultHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.classList.add("btn-busy");
+    btn.innerHTML = `<span class="btn-spinner"></span> 処理中…`;
+  } else {
+    btn.disabled = false;
+    btn.classList.remove("btn-busy");
+    if (btn.dataset.defaultHtml) btn.innerHTML = btn.dataset.defaultHtml;
+  }
+}
+
+// 処理中状態を解除（フラグ・ボタン・保険タイマーをまとめて復帰）
+function releasePrintLock() {
+  isPrinting = false;
+  setPrintBtnBusy(false);
+  if (printBtnInsuranceTimer) {
+    clearTimeout(printBtnInsuranceTimer);
+    printBtnInsuranceTimer = null;
+  }
+}
+
 async function doPrint() {
-  // ---- 1. 先にGASへ記録（採番してもらう） ----
-  let result;
+  // ---- 0. 二度押しブロック ----
+  if (isPrinting) return;  // 処理中の再タップは無視（disabled前の一瞬の連打もここで弾く）
+  isPrinting = true;
+  setPrintBtnBusy(true);
+  // 保険：30秒経っても復帰していなければ強制復帰（固まり事故防止）
+  // ※GASのコールドスタートで数秒かかることがあるため、短すぎる値にはしない
+  printBtnInsuranceTimer = setTimeout(() => {
+    releasePrintLock();
+    showToast("処理がタイムアウトしました。記録されたか売上記録シートを確認してください", "error");
+  }, 30000);
+
   try {
-    result = await sendToGAS();
-  } catch (e) {
-    showToast("記録処理でエラー：" + e.message, "error");
-    return;
+    // ---- 1. 先にGASへ記録（採番してもらう） ----
+    let result;
+    try {
+      result = await sendToGAS();
+    } catch (e) {
+      showToast("記録処理でエラー：" + e.message, "error");
+      return;
+    }
+
+    if (!result.ok) {
+      // 記録できなかった → 印刷しない。内容は残す
+      showToast("記録できませんでした。印刷を中止しました（内容は保持）", "error");
+      return;
+    }
+
+    // ---- 2. 採番された番号で明細書（A5×2枚）を組み立て ----
+    const invoiceNo = result.invoiceNo;
+    state.lastInvoiceNo = invoiceNo;
+    const html1 = renderReceiptHtml(true, invoiceNo);
+    const html2 = renderReceiptHtml(true, invoiceNo);
+    document.getElementById("printArea").innerHTML = `
+      <div class="print-page">${html1}</div>
+      <div class="print-page">
+        <div class="print-watermark">控　え</div>
+        ${html2}
+      </div>
+    `;
+
+    showToast("スプシに記録しました（No. " + invoiceNo + "）");
+
+    // ---- 3. 印刷 ----
+    // 印刷内容は既に printArea に書き込み済みなので、
+    // この後にカートをクリアしても印刷物には影響しない。
+    window.print();
+
+    // ---- 4. 会計確定（カートクリア） ----
+    // 印刷ダイアログを閉じた後に実行されるよう、わずかに遅延させる。
+    setTimeout(() => {
+      clearCart();
+      closeReceipt();
+    }, 300);
+  } finally {
+    // どの経路（成功・記録失敗・例外）でも必ずボタンを復帰させる
+    releasePrintLock();
   }
-
-  if (!result.ok) {
-    // 記録できなかった → 印刷しない。内容は残す
-    showToast("記録できませんでした。印刷を中止しました（内容は保持）", "error");
-    return;
-  }
-
-  // ---- 2. 採番された番号で明細書（A5×2枚）を組み立て ----
-  const invoiceNo = result.invoiceNo;
-  state.lastInvoiceNo = invoiceNo;
-  const html1 = renderReceiptHtml(true, invoiceNo);
-  const html2 = renderReceiptHtml(true, invoiceNo);
-  document.getElementById("printArea").innerHTML = `
-    <div class="print-page">${html1}</div>
-    <div class="print-page">
-      <div class="print-watermark">控　え</div>
-      ${html2}
-    </div>
-  `;
-
-  showToast("スプシに記録しました（No. " + invoiceNo + "）");
-
-  // ---- 3. 印刷 ----
-  // 印刷内容は既に printArea に書き込み済みなので、
-  // この後にカートをクリアしても印刷物には影響しない。
-  window.print();
-
-  // ---- 4. 会計確定（カートクリア） ----
-  // 印刷ダイアログを閉じた後に実行されるよう、わずかに遅延させる。
-  setTimeout(() => {
-    clearCart();
-    closeReceipt();
-  }, 300);
 }
 
 // ===== GASに送信 =====
