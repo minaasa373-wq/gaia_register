@@ -813,6 +813,9 @@ function confirmFormula() {
   if (!canAddItem()) return;
 
   // カートに数量1×算出料金で追加（priceを算出値に差し替え）
+  // 技術料も算出価格そのもの（体重連動の薬剤は単価＝技術料の運用）。
+  // masterPriceにも算出価格を入れることで、編集パネルで単価を手修正した場合に
+  // 技術料が比例して追従する（calcItemGigi = gigi × price/masterPrice × qty）。
   state.cart.push({
     itemId: itemIdCounter++,
     productId: formulaProduct.id,
@@ -828,8 +831,8 @@ function confirmFormula() {
     qtyType: formulaProduct.qtyType || "",
     staffRole: null,
     isNurseMark: false,
-    masterPrice: formulaProduct.price,
-    gigi: formulaProduct.gigi || 0
+    masterPrice: calcPrice,
+    gigi: calcPrice
   });
 
   closeFormulaModal();
@@ -1074,12 +1077,23 @@ function removeCartItem(itemId) {
 }
 
 // ===== 合計計算 =====
+// 【税込品目の特例】品名に「（税込）」を含む品目（例：狂犬病ワクチン（税込））は
+// 価格が既に税込のため、消費税10%の加算対象から除外する。
+// 対象品目かどうかはマスタの品名だけで制御できる（コード修正不要）。
+function isTaxIncludedItem(item) {
+  const n = item.name || "";
+  return n.includes("（税込）") || n.includes("(税込)");
+}
+
 function recalc() {
-  let subtotal = 0;
+  let subtotal = 0;      // 表示上の小計（税込品目も含む全品目の合計）
+  let taxableSub = 0;    // 消費税10%の課税対象（税込品目を除く）
   state.cart.forEach(item => {
-    subtotal += Math.round(item.qty * item.price);
+    const line = Math.round(item.qty * item.price);
+    subtotal += line;
+    if (!isTaxIncludedItem(item)) taxableSub += line;
   });
-  const tax = Math.ceil(subtotal * 0.1);
+  const tax = Math.ceil(taxableSub * 0.1);
   const total = subtotal + tax;
   document.getElementById("subtotalDisp").textContent = "¥" + subtotal.toLocaleString();
   document.getElementById("taxDisp").textContent = "¥" + tax.toLocaleString();
