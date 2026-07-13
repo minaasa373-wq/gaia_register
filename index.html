@@ -169,6 +169,19 @@ button { cursor: pointer; border: none; background: none; }
   align-items: center;
   gap: 6px;
 }
+.kakolog-link {
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--green);
+  text-decoration: none;
+  background: var(--green-light, #e8f3ed);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  margin-right: 8px;
+  white-space: nowrap;
+}
+.kakolog-link:active { background: var(--border); }
 .status-dot {
   width: 8px;
   height: 8px;
@@ -1301,6 +1314,7 @@ button { cursor: pointer; border: none; background: none; }
       <input type="date" id="visitDate">
     </div>
     <div class="header-status">
+      <a class="kakolog-link" href="kakolog.html" target="_blank" rel="noopener">📖 過去ログ</a>
       <span class="status-dot" id="connStatus"></span>
       <span id="connText">未接続</span>
     </div>
