@@ -167,7 +167,7 @@ function buildStaffRow(container, idx, removable) {
 
   const sel = document.createElement("select");
   sel.className = "staff-select";
-  sel.innerHTML = state.staff.map(s =>
+  sel.innerHTML = `<option value="">-- 選択 --</option>` + state.staff.map(s =>
     `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`
   ).join("");
   row.appendChild(sel);
@@ -215,10 +215,14 @@ function getSelectedStaff() {
   return names.join(",");
 }
 
-// 担当人数を返す
+// 担当人数を返す（選択済みの行だけカウント）
 function getStaffCount() {
   const area = document.getElementById("staffArea");
-  return area.querySelectorAll(".staff-row").length;
+  let count = 0;
+  area.querySelectorAll(".staff-select").forEach(sel => {
+    if (sel.value.trim()) count++;
+  });
+  return count || 1; // 最低1（ゼロ除算回避）
 }
 
 // 担当者UIを1人にリセット（会計確定後）
@@ -300,23 +304,26 @@ function renderProducts() {
         </div>`;
       }
 
-      // 単独行：計算式 > 担当者選択 > 薬・物販数量入力 > 通常 の優先で分岐
+      // 単独行：計算式 > 時価(gigi:same) > 担当者選択 > 薬・物販数量入力 > 通常 の優先で分岐
       // 薬・物販でも数量タイプ(H列)が空欄なら数量モーダルを出さずダイレクト追加
       //（フード等：1タップ1個。3個なら3回タップの運用）
       const needFormula = hasFormula(p);
-      const needStaffPick = !needFormula && isStaffPick(p);
+      const needPriceInput = !needFormula && hasGigiSame(p);
+      const needStaffPick = !needFormula && !needPriceInput && isStaffPick(p);
       const hasQtyType = (p.qtyType || "").toString().trim() !== "";
-      const needDrugQty = !needFormula && !needStaffPick && p.group === "薬・物販" && hasQtyType;
+      const needDrugQty = !needFormula && !needPriceInput && !needStaffPick && p.group === "薬・物販" && hasQtyType;
       const clickAction = needFormula ? `openFormulaModal(${p.id})`
+                        : needPriceInput ? `openPriceModal(${p.id})`
                         : needStaffPick ? `openStaffPickModal(${p.id})`
                         : needDrugQty ? `openDrugQtyModal(${p.id})`
                         : `addToCartById(${p.id})`;
       const pickMark = needStaffPick ? `<span class="tile-staffpick">担</span>` : "";
+      const priceMark = needPriceInput ? `<span class="tile-formula">¥</span>` : "";
       const formulaMark = needFormula ? `<span class="tile-formula">計</span>` : "";  // 【第3弾】
       const doseLine = p.dose ? `<div class="tile-dose">${escapeHtml(p.dose)}</div>` : "";
 
       return `<div class="product-tile" style="--tile-color:${color}" data-product-id="${p.id}" onclick="${clickAction}">
-        ${fav}${pickMark}${formulaMark}
+        ${fav}${pickMark}${priceMark}${formulaMark}
         <div class="tile-name">${escapeHtml(p.name)}</div>
         ${doseLine}
         <div class="tile-price">¥${p.price.toLocaleString()}${unitSuffix(p.unit)}</div>
@@ -340,6 +347,10 @@ function isIntegerOnly(p) {
 // 【第3弾】計算式判定（メモ列に formula: で始まる文字列があれば対象）
 function hasFormula(p) {
   return (p.memo || "").includes("formula:");
+}
+// 時価品目判定（メモ列に gigi:same があれば「入力価格＝技術料」品目）
+function hasGigiSame(p) {
+  return (p.memo || "").includes("gigi:same");
 }
 // メモ列から計算パラメータを抽出
 // 例: "formula:weight*400+1000" → { varName:"weight", coeff:400, base:1000 }
@@ -845,6 +856,58 @@ function closeFormulaModal() {
   formulaParams = null;
 }
 
+// ===== 時価品目（gigi:same）金額入力モーダル =====
+// メモ欄に gigi:same がある品目はタップすると金額入力モーダルが開く。
+// 入力金額が単価にも技術料にもセットされてカートに数量1で追加。
+let priceInputProduct = null;
+
+function openPriceModal(productId) {
+  const p = state.products.find(x => x.id == productId);
+  if (!p) return;
+  priceInputProduct = p;
+  document.getElementById("priceInputProductName").textContent =
+    p.dose ? `${p.name}（${p.dose}）` : p.name;
+  document.getElementById("priceInputValue").value = "";
+  document.getElementById("priceInputModal").classList.remove("hidden");
+  setTimeout(() => document.getElementById("priceInputValue").focus(), 100);
+}
+
+function confirmPrice() {
+  if (!priceInputProduct) return;
+  const price = parseFloat(document.getElementById("priceInputValue").value) || 0;
+  if (price <= 0) {
+    showToast("金額を入力してください", "error");
+    return;
+  }
+  if (!canAddItem()) return;
+  state.cart.push({
+    itemId: itemIdCounter++,
+    productId: priceInputProduct.id,
+    isPowder: false,
+    isGigiSame: true,
+    group: priceInputProduct.group || "診療",
+    name: priceInputProduct.name,
+    dose: priceInputProduct.dose || "",
+    category: priceInputProduct.category,
+    subcategory: priceInputProduct.subcategory || "",
+    qty: 1,
+    price: price,
+    unit: priceInputProduct.unit || "錠",
+    qtyType: priceInputProduct.qtyType || "",
+    staffRole: null,
+    isNurseMark: false,
+    masterPrice: price,
+    gigi: price
+  });
+  closePriceModal();
+  renderCart();
+}
+
+function closePriceModal() {
+  document.getElementById("priceInputModal").classList.add("hidden");
+  priceInputProduct = null;
+}
+
 // ===== 薬・物販 数量入力モーダル =====
 let drugQtyProduct = null;
 
@@ -1058,6 +1121,11 @@ function applyEdit() {
   }
   item.qty = qty;
   item.price = priceInput;
+  // gigi:same 品目：単価変更時に技術料も同額に追従
+  if (item.isGigiSame) {
+    item.gigi = priceInput;
+    item.masterPrice = priceInput;
+  }
   renderCart();
 }
 
@@ -1108,10 +1176,10 @@ function recalc() {
 function openReceipt() {
   if (state.cart.length === 0) return;
 
-  // 【第2弾】担当獣医の未選択チェック
+  // 担当獣医の未選択チェック（デフォルト「-- 選択 --」のまま進むのを防止）
   const staffStr = getSelectedStaff();
   if (!staffStr) {
-    showToast("担当獣医を選択してください", "error");
+    showToast("担当者を選択してください", "error");
     return;
   }
 
@@ -1135,6 +1203,21 @@ function renderReceiptHtml(forPrint, invoiceNo) {
   const { subtotal, tax, total } = recalc();
   const owner = document.getElementById("ownerName").value.trim();
   const pet = document.getElementById("petName").value.trim();
+  const animalType = document.getElementById("animalType").value;
+  const animalIn = animalInitial(animalType);
+  // ペット名＋動物種の表示組み立て
+  // ペット名あり＋動物種あり → 「ポチ 様（D）」
+  // ペット名あり＋動物種なし → 「ポチ ちゃん」（従来通り）
+  // ペット名なし＋動物種あり → 「（D）」
+  // 両方なし → 空
+  let petDisp = "";
+  if (pet && animalIn) {
+    petDisp = `（${escapeHtml(pet)} 様（${animalIn}））`;
+  } else if (pet) {
+    petDisp = `（${escapeHtml(pet)} ちゃん）`;
+  } else if (animalIn) {
+    petDisp = `（${animalIn}）`;
+  }
   // 【第2弾】担当表示を getSelectedStaff() に差し替え（カンマ区切り→スペース区切りで表示）
   const staff = getSelectedStaff().replace(/,/g, ", ");
   const date = document.getElementById("visitDate").value;
@@ -1167,7 +1250,7 @@ function renderReceiptHtml(forPrint, invoiceNo) {
         <span>担当：${escapeHtml(staff)}</span>
         <span>　</span>
       </div>
-      <div class="print-customer">${escapeHtml(owner)} 様${pet ? `（${escapeHtml(pet)} ちゃん）` : ""}</div>
+      <div class="print-customer">${escapeHtml(owner)} 様${petDisp}</div>
       <div class="print-divider"></div>
       ${items}
       <div class="print-divider"></div>
@@ -1190,7 +1273,7 @@ function renderReceiptHtml(forPrint, invoiceNo) {
         <div class="receipt-meta-row"><span>発行日：${dateDisp}</span><span>No. ${invoiceDisp}</span></div>
         <div class="receipt-meta-row"><span>担当：${escapeHtml(staff)}</span><span></span></div>
       </div>
-      <div class="receipt-customer">${escapeHtml(owner)} 様${pet ? `（${escapeHtml(pet)} ちゃん）` : ""}</div>
+      <div class="receipt-customer">${escapeHtml(owner)} 様${petDisp}</div>
       <div class="receipt-divider"></div>
       <div class="receipt-items">${items}</div>
       <div class="receipt-divider"></div>
@@ -1332,6 +1415,7 @@ async function sendToGAS() {
     staff: getSelectedStaff(),
     ownerName: document.getElementById("ownerName").value.trim(),
     petName: document.getElementById("petName").value.trim(),
+    animalType: document.getElementById("animalType").value,
     items: state.cart.map(item => ({
       name: cartDispName(item),
       qty: item.qty,
@@ -1382,6 +1466,7 @@ function clearCart() {
   state.selectedItemId = null;
   document.getElementById("ownerName").value = "";
   document.getElementById("petName").value = "";
+  document.getElementById("animalType").value = "";
   document.getElementById("editPanel").classList.add("hidden");
   // 【第2弾】担当者プルダウンを1人にリセット
   resetStaffArea();
@@ -1397,6 +1482,12 @@ function formatDate(iso) {
   if (!iso) return "";
   const [y, m, d] = iso.split("-");
   return `${y}年${parseInt(m)}月${parseInt(d)}日`;
+}
+
+// 動物種→明細書用イニシャル
+function animalInitial(type) {
+  const map = { "犬": "D", "猫": "C", "ウサギ": "R", "その他": "O" };
+  return map[type] || "";
 }
 
 function setConnStatus(level, text) {
@@ -1464,6 +1555,9 @@ function getDemoProducts() {
 
     // 【第3弾】計算補助（formula）デモ
     _dp({ id: 901, category: "注射", name: "セフォベクリア", price: 0, gigi: 0, memo: "formula:weight*400+1000", keywords: "ｾﾌｫﾍﾞｸﾘｱ", order: 901 }),
-    _dp({ id: 905, category: "手術", name: "プロポフォール", price: 0, gigi: 0, memo: "formula:ml*100+5000", keywords: "ﾌﾟﾛﾎﾟﾌｫｰﾙ", order: 905 })
+    _dp({ id: 905, category: "手術", name: "プロポフォール", price: 0, gigi: 0, memo: "formula:ml*100+5000", keywords: "ﾌﾟﾛﾎﾟﾌｫｰﾙ", order: 905 }),
+
+    // 時価品目（gigi:same）デモ
+    _dp({ id: 910, category: "処置", name: "皮膚処置（時価）", price: 0, gigi: 0, memo: "gigi:same 大きさによる", keywords: "ﾋﾌ ｼｮﾁ", order: 910 })
   ];
 }
