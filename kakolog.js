@@ -13,14 +13,15 @@ let isSearching = false; // 連打防止
 async function doSearch() {
   if (isSearching) return;
 
-  const owner = document.getElementById("qOwner").value.trim();
-  const pet   = document.getElementById("qPet").value.trim();
-  const from  = document.getElementById("qFrom").value;
-  const to    = document.getElementById("qTo").value;
+  const owner  = document.getElementById("qOwner").value.trim();
+  const pet    = document.getElementById("qPet").value.trim();
+  const animal = document.getElementById("qAnimal").value;
+  const from   = document.getElementById("qFrom").value;
+  const to     = document.getElementById("qTo").value;
 
   const resultsEl = document.getElementById("results");
 
-  if (!owner && !pet && !from && !to) {
+  if (!owner && !pet && !animal && !from && !to) {
     resultsEl.innerHTML = `<div class="result-status warn">検索条件を1つ以上入力してください</div>`;
     return;
   }
@@ -36,10 +37,11 @@ async function doSearch() {
 
   try {
     const params = new URLSearchParams({ action: "searchRecords" });
-    if (owner) params.set("owner", owner);
-    if (pet)   params.set("pet", pet);
-    if (from)  params.set("from", from);
-    if (to)    params.set("to", to);
+    if (owner)  params.set("owner", owner);
+    if (pet)    params.set("pet", pet);
+    if (animal) params.set("animal", animal);
+    if (from)   params.set("from", from);
+    if (to)     params.set("to", to);
 
     const res = await fetch(GAS_URL + "?" + params.toString());
     const data = await res.json();
@@ -75,6 +77,7 @@ function renderResults(data) {
   }
 
   const cards = records.map((r, i) => {
+    const animalBadge = r.animalType ? `【${r.animalType}】` : "";
     const names = [r.owner, r.pet].filter(Boolean).join(" / ") || "（名前未入力）";
     return `
     <div class="record-card" id="card-${i}">
@@ -82,7 +85,7 @@ function renderResults(data) {
         <span class="record-chevron">▶</span>
         <div class="record-main">
           <div class="record-date">${escapeHtml(r.visitDate)}　No.${escapeHtml(r.invoiceNo)}</div>
-          <div class="record-names">${escapeHtml(names)}</div>
+          <div class="record-names">${escapeHtml(animalBadge + names)}</div>
         </div>
         <div class="record-total">¥${Number(r.total).toLocaleString()}</div>
       </div>
@@ -111,6 +114,7 @@ function toggleCard(i) {
 function clearForm() {
   document.getElementById("qOwner").value = "";
   document.getElementById("qPet").value = "";
+  document.getElementById("qAnimal").value = "";
   document.getElementById("qFrom").value = "";
   document.getElementById("qTo").value = "";
   document.getElementById("results").innerHTML =
