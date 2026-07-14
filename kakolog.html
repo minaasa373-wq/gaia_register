@@ -85,7 +85,16 @@ body {
   background: #fff;
   color: var(--text);
 }
-.field input:focus { outline: 2px solid var(--green); border-color: var(--green); }
+.field select {
+  width: 100%;
+  padding: 10px 12px;
+  font-size: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  color: var(--text);
+}
+.field input:focus, .field select:focus { outline: 2px solid var(--green); border-color: var(--green); }
 .date-pair { display: flex; align-items: center; gap: 6px; }
 .date-pair input { flex: 1; min-width: 0; }
 .date-pair .tilde { color: var(--muted); flex: none; }
@@ -247,6 +256,16 @@ body {
     <div class="field">
       <label for="qPet">ペット名（部分一致）</label>
       <input type="text" id="qPet" placeholder="例：ポチ">
+    </div>
+    <div class="field">
+      <label for="qAnimal">動物種</label>
+      <select id="qAnimal">
+        <option value="">すべて</option>
+        <option value="犬">犬</option>
+        <option value="猫">猫</option>
+        <option value="ウサギ">ウサギ</option>
+        <option value="その他">その他</option>
+      </select>
     </div>
     <div class="field" style="grid-column: 1 / -1;">
       <label>会計日（期間。1日だけなら同じ日を両方に）</label>

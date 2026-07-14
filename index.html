@@ -95,6 +95,8 @@ button { cursor: pointer; border: none; background: none; }
 .app-header input[type="text"] { width: 110px; }
 .app-header select { width: 110px; }
 .app-header input[type="date"] { width: 130px; }
+/* 動物種プルダウン（ペット名の横・コンパクト） */
+.animal-type-select { width: 70px !important; font-size: 12px !important; padding: 5px 4px !important; }
 
 /* 【第2弾】担当獣医 複数追加UI */
 .staff-field-group {
@@ -1308,6 +1310,13 @@ button { cursor: pointer; border: none; background: none; }
     <div class="field-group">
       <span class="field-label">ペット</span>
       <input type="text" id="petName" placeholder="名前">
+      <select id="animalType" class="animal-type-select">
+        <option value="">種別</option>
+        <option value="犬">犬</option>
+        <option value="猫">猫</option>
+        <option value="ウサギ">ウサギ</option>
+        <option value="その他">その他</option>
+      </select>
     </div>
     <div class="field-group">
       <span class="field-label">日付</span>
@@ -1567,6 +1576,33 @@ button { cursor: pointer; border: none; background: none; }
     <div class="modal-footer">
       <button class="btn-cancel" onclick="closeFormulaModal()">キャンセル</button>
       <button class="btn-confirm" onclick="confirmFormula()">注文に追加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 時価品目（gigi:same）金額入力モーダル ============ -->
+<div class="modal-overlay hidden" id="priceInputModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">金額入力</span>
+      <button class="modal-close" onclick="closePriceModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="dose-info">
+        <div class="dose-product-name" id="priceInputProductName"></div>
+        <div class="dose-instruction">金額を入力してください</div>
+      </div>
+      <div class="formula-field">
+        <label>金額（税抜）</label>
+        <div class="drug-qty-row">
+          <span style="font-size:18px;font-weight:700;">¥</span>
+          <input type="number" id="priceInputValue" min="0" step="1" placeholder="例：5000" inputmode="numeric">
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closePriceModal()">キャンセル</button>
+      <button class="btn-confirm" onclick="confirmPrice()">カートに追加</button>
     </div>
   </div>
 </div>
