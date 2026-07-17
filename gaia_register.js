@@ -1206,13 +1206,13 @@ function renderReceiptHtml(forPrint, invoiceNo) {
   const animalType = document.getElementById("animalType").value;
   const animalIn = animalInitial(animalType);
   // ペット名＋動物種の表示組み立て
-  // ペット名あり＋動物種あり → 「ポチ 様（D）」
+  // ペット名あり＋動物種あり → 「ポチ ちゃん（D）」
   // ペット名あり＋動物種なし → 「ポチ ちゃん」（従来通り）
   // ペット名なし＋動物種あり → 「（D）」
   // 両方なし → 空
   let petDisp = "";
   if (pet && animalIn) {
-    petDisp = `（${escapeHtml(pet)} 様（${animalIn}））`;
+    petDisp = `（${escapeHtml(pet)} ちゃん（${animalIn}））`;
   } else if (pet) {
     petDisp = `（${escapeHtml(pet)} ちゃん）`;
   } else if (animalIn) {
