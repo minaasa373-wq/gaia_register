@@ -962,6 +962,15 @@ button { cursor: pointer; border: none; background: none; }
   border-color: var(--green);
   background: var(--green-light);
 }
+/* すでにカートにある項目（採血など）：選択不可のグレー表示 */
+.dose-opt-disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  background: #f0f0f0;
+  border-style: dashed;
+}
+.dose-opt-disabled:hover { border-color: var(--border); background: #f0f0f0; }
+.dose-opt-disabled .dose-price { color: var(--muted); font-weight: 600; }
 .dose-value {
   font-size: 15px;
   font-weight: 700;

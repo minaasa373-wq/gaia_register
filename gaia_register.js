@@ -727,10 +727,34 @@ function closeDoseModal() {
 let multiPickGroup = [];        // モーダルグループの全商品
 let multiPickSelected = new Set(); // 選択中の商品ID
 
+// メモ欄に default:on がある項目はモーダルを開いた時点でチェック済みにする
+function isDefaultOn(p) {
+  return (p.memo || "").includes("default:on");
+}
+
+// カート内に指定の品名がすでに含まれているか判定する。
+// 複数選択は「採血・血液検査15・Lip」のように1行へ合算されるため、
+// 行の品名を「・」で分解して完全一致で探す。
+function cartHasItemNamed(name) {
+  return state.cart.some(item => {
+    // 【返品】接頭辞や看護師＊印を外した素の品名で比較する
+    const raw = String(item.name || "");
+    return raw.split("・").some(n => n.replace(/＊$/, "").trim() === name);
+  });
+}
+
 function openMultiPickModal(modalGroup) {
   multiPickGroup = state.products.filter(p => (p.modalGroup || "").trim() === modalGroup.trim());
   if (multiPickGroup.length === 0) return;
   multiPickSelected = new Set();
+  // default:on の項目は初期チェックを入れる。
+  // ただし同じ品名がすでにカートにある場合は重複するのでチェックしない
+  //（例：血検外注で採血済み → 血検院内を開いても採血はOFFのまま）
+  multiPickGroup.forEach(p => {
+    if (isDefaultOn(p) && !cartHasItemNamed(p.name)) {
+      multiPickSelected.add(p.id);
+    }
+  });
   document.getElementById("multiPickTitle").textContent = modalGroup;
   renderMultiPickOptions();
   updateMultiPickTotal();
@@ -738,16 +762,31 @@ function openMultiPickModal(modalGroup) {
 }
 
 function renderMultiPickOptions() {
-  const opts = multiPickGroup.map(p => `
-    <div class="dose-opt${multiPickSelected.has(p.id) ? " selected" : ""}" onclick="toggleMultiPick(${p.id})">
-      <div class="dose-value">${escapeHtml(p.name)}</div>
-      <div class="dose-price">¥${p.price.toLocaleString()}</div>
-    </div>
-  `).join("");
+  const opts = multiPickGroup.map(p => {
+    // すでにカートにある品名は「追加済」と表示して選べないようにする
+    const dup = isDefaultOn(p) && cartHasItemNamed(p.name);
+    if (dup) {
+      return `
+        <div class="dose-opt dose-opt-disabled">
+          <div class="dose-value">${escapeHtml(p.name)}</div>
+          <div class="dose-price">追加済</div>
+        </div>
+      `;
+    }
+    return `
+      <div class="dose-opt${multiPickSelected.has(p.id) ? " selected" : ""}" onclick="toggleMultiPick(${p.id})">
+        <div class="dose-value">${escapeHtml(p.name)}</div>
+        <div class="dose-price">¥${p.price.toLocaleString()}</div>
+      </div>
+    `;
+  }).join("");
   document.getElementById("multiPickOptions").innerHTML = opts;
 }
 
 function toggleMultiPick(id) {
+  const p = multiPickGroup.find(x => x.id === id);
+  // すでにカートにある default:on 項目（採血など）は選択させない
+  if (p && isDefaultOn(p) && cartHasItemNamed(p.name)) return;
   if (multiPickSelected.has(id)) {
     multiPickSelected.delete(id);
   } else {
@@ -758,14 +797,19 @@ function toggleMultiPick(id) {
 }
 
 function updateMultiPickTotal() {
-  const sel = multiPickGroup.filter(p => multiPickSelected.has(p.id));
+  const sel = multiPickGroup.filter(p =>
+    multiPickSelected.has(p.id) && !(isDefaultOn(p) && cartHasItemNamed(p.name))
+  );
   const total = sel.reduce((s, p) => s + (p.price || 0), 0);
   document.getElementById("multiPickCount").textContent = sel.length;
   document.getElementById("multiPickTotalAmount").textContent = "¥" + total.toLocaleString();
 }
 
 function confirmMultiPick() {
-  const sel = multiPickGroup.filter(p => multiPickSelected.has(p.id));
+  // 保険：モーダルを開いた後にカートが変わった場合に備え、確定時にも重複を除外する
+  const sel = multiPickGroup.filter(p =>
+    multiPickSelected.has(p.id) && !(isDefaultOn(p) && cartHasItemNamed(p.name))
+  );
   if (sel.length === 0) {
     showToast("検査項目を選択してください", "error");
     return;
