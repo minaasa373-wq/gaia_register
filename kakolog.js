@@ -163,15 +163,10 @@ function reprintRecord(i) {
     </div>`;
   }).join("");
 
-  // 再発行日（今日）
-  const now = new Date();
-  const todayDisp = `${now.getFullYear()}年${now.getMonth() + 1}月${now.getDate()}日`;
-
   const staffDisp = String(r.staff || "").replace(/,/g, ", ");
 
   document.getElementById("reprintArea").innerHTML = `
     <div class="print-page">
-      <div class="print-watermark">再　発　行</div>
       <div class="print-title">明　細　書</div>
       <div class="print-meta">
         <span>発行日：${escapeHtml(formatDateJp(r.visitDate))}</span>
@@ -179,7 +174,7 @@ function reprintRecord(i) {
       </div>
       <div class="print-meta">
         <span>担当：${escapeHtml(staffDisp)}</span>
-        <span>再発行日：${todayDisp}</span>
+        <span>　</span>
       </div>
       <div class="print-customer">${escapeHtml(r.owner)} 様${petDisp}</div>
       <div class="print-divider"></div>

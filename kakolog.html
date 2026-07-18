@@ -272,11 +272,12 @@ body {
       <select id="qStaff">
         <option value="">すべて</option>
         <option value="南繁">南繁</option>
-        <option value="辻松淳二">辻松淳二</option>
-        <option value="腰原あすか">腰原あすか</option>
-        <option value="城戸大樹">城戸大樹</option>
-        <option value="中出哲也">中出哲也</option>
-        <option value="要田正治">要田正治</option>
+        <option value="辻松">辻松</option>
+        <option value="腰原">腰原</option>
+        <option value="城戸">城戸</option>
+        <option value="中出">中出</option>
+        <option value="要田">要田</option>
+        <option value="看護師">看護師</option>
       </select>
     </div>
     <div class="field" style="grid-column: 1 / -1;">
@@ -318,32 +319,33 @@ body {
 
 .print-area { display: none; }
 @media print {
-  body * { visibility: hidden; }
-  .print-area, .print-area * { visibility: visible; }
-  .print-area { display: block; position: absolute; left: 0; top: 0; }
+  /* visibility:hidden だと要素の場所（高さ）が残り、検索結果の分だけ白紙ページが
+     刷られてしまう。display:none で実際にレイアウトから外す。 */
+  body > *:not(.print-area) { display: none !important; }
+  html, body {
+    margin: 0 !important;
+    padding: 0 !important;
+    height: auto !important;
+    background: #fff !important;
+  }
+  .print-area { display: block !important; }
+  .print-page {
+    page-break-after: avoid;
+    page-break-inside: avoid;
+    height: auto;      /* 固定高だと余白が次ページに溢れることがある */
+    min-height: 0;
+  }
   @page { size: A5 portrait; margin: 0; }
 }
 .print-page {
   width: 148mm;
-  height: 210mm;
   padding: 12mm 10mm;
   background: #fff;
   position: relative;
   font-size: 11px;
   color: #000;
   font-family: 'Noto Sans JP', sans-serif;
-}
-.print-watermark {
-  position: absolute;
-  top: 12mm;
-  right: 10mm;
-  font-family: 'Noto Serif JP', serif;
-  font-size: 16px;
-  font-weight: 700;
-  border: 2px solid #14472d;
-  color: #14472d;
-  padding: 3px 10px;
-  letter-spacing: 0.3em;
+  box-sizing: border-box;
 }
 .print-title {
   text-align: center;
