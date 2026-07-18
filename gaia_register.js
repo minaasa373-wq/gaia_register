@@ -352,6 +352,44 @@ function hasFormula(p) {
 function hasGigiSame(p) {
   return (p.memo || "").includes("gigi:same");
 }
+// 民宿品目判定（メモ列に stay があれば「頭数×泊数」入力品目）
+function hasStay(p) {
+  return (p.memo || "").includes("stay");
+}
+
+// ===== 返品モード =====
+// ヘッダーの「返品」トグルON中に追加した品目はマイナス金額の返品行になる。
+// 1品追加した時点で自動的にOFFに戻る（戻し忘れ事故防止）。
+let returnMode = false;
+
+function toggleReturnMode() {
+  returnMode = !returnMode;
+  updateReturnModeBtn();
+  showToast(returnMode ? "返品モードON：次に追加する品目が返品になります" : "返品モードOFF", returnMode ? "info" : "");
+}
+
+function updateReturnModeBtn() {
+  const btn = document.getElementById("returnModeBtn");
+  if (btn) btn.classList.toggle("active", returnMode);
+}
+
+// 新規カート行の共通仕上げ。返品モードON中はマイナス金額の返品行に変換し、モードを自動OFF。
+function finalizeNewCartItem(item) {
+  if (returnMode) {
+    item.isReturn = true;
+    item.price = -Math.abs(item.price);
+    item.gigi = 0;          // 返品に技術料は発生しない
+    item.masterPrice = 0;
+    returnMode = false;     // 1品追加で自動OFF
+    updateReturnModeBtn();
+  }
+  return item;
+}
+
+// マイナス金額を「-¥700」形式で表示する
+function yenDisp(v) {
+  return v < 0 ? "-¥" + Math.abs(v).toLocaleString() : "¥" + v.toLocaleString();
+}
 // メモ列から計算パラメータを抽出
 // 例: "formula:weight*400+1000" → { varName:"weight", coeff:400, base:1000 }
 // 例: "formula:ml*100+5000"     → { varName:"ml", coeff:100, base:5000 }
@@ -413,6 +451,10 @@ function unitSuffix(unit) {
 // ===== 数量＋単位の文字列（診療行為は単位を出さない、薬・物販は単位を出す） =====
 // 例）診療：「1」 / 薬・物販：「1錠」「2本」「20包」
 function qtyUnitText(item) {
+  // 民宿：頭数×泊数の表示（例「2頭×3泊」）
+  if (item.stayHeads && item.stayNights) {
+    return `${item.stayHeads}頭×${item.stayNights}泊`;
+  }
   const isCare = item.group === "診療";
   if (isCare && !item.isPowder) return `${item.qty}`;
   return `${item.qty}${item.unit || ""}`;
@@ -465,26 +507,30 @@ function canAddItem() {
 function cartDispName(item) {
   let n = item.name;
   if (item.isNurseMark) n += "＊";
+  if (item.isReturn) n = "【返品】" + n;
   return n;
 }
 
 // 既存の同じ商品IDがあれば数量加算、なければ新規追加
 // staffRole: null（担当者選択なし）/ "vet"（獣医）/ "nurse"（看護師＝技術料0＋＊印）
-function addToCart(product, qty, staffRole) {
+// extra: 追加フィールド（民宿の stayHeads / stayNights 等）
+function addToCart(product, qty, staffRole, extra) {
   staffRole = staffRole || null;
+  extra = extra || null;
   // 整数固定なら数量を整数に丸める
   if (isIntegerOnly(product)) {
     qty = Math.max(1, Math.round(qty));
   }
   // 担当者種別が異なる場合は別行扱い（同じ商品でも獣医分/看護師分を分ける）
-  const existing = state.cart.find(c =>
-    !c.isPowder && c.productId === product.id && c.staffRole === staffRole
-  );
+  // 返品モード中・返品行・民宿行（頭数×泊数表示を守るため）はマージせず常に新規行
+  const existing = (!returnMode && !extra) ? state.cart.find(c =>
+    !c.isPowder && !c.isReturn && !c.stayHeads && c.productId === product.id && c.staffRole === staffRole
+  ) : null;
   if (existing) {
     existing.qty = Math.round((existing.qty + qty) * 100) / 100;
   } else {
     if (!canAddItem()) return;
-    state.cart.push({
+    const item = {
       itemId: itemIdCounter++,
       productId: product.id,
       isPowder: false,
@@ -502,7 +548,9 @@ function addToCart(product, qty, staffRole) {
       // 【第2弾】技術料計算に必要なマスタ元値を保持
       masterPrice: product.price,  // 編集で変わらない元単価
       gigi: product.gigi || 0      // マスタの技術料
-    });
+    };
+    if (extra) Object.assign(item, extra);
+    state.cart.push(finalizeNewCartItem(item));
   }
   renderCart();
 }
@@ -510,6 +558,7 @@ function addToCart(product, qty, staffRole) {
 // ===== 【第2弾】技術料の計算 =====
 // 行ごとの技術料（設計確定式）
 function calcItemGigi(item) {
+  if (item.isReturn) return 0;                             // 返品行は技術料0
   if (item.isNurseMark) return 0;                          // 看護師＊印は技術料0
   if (!item.gigi || item.gigi === 0) return 0;             // 技術料なし
   if (!item.masterPrice || item.masterPrice === 0) return 0; // ゼロ除算回避（体重連動式等）
@@ -586,6 +635,8 @@ function openDoseModalByGroup(modalGroup) {
   `).join("");
   document.getElementById("doseOptions").innerHTML = opts;
   document.getElementById("doseQty").value = 1;
+  document.getElementById("stayHeads").value = 1;
+  document.getElementById("stayNights").value = 1;
   updateDoseQtyLabel();
   updateDoseTotal();
   document.getElementById("doseModal").classList.remove("hidden");
@@ -608,26 +659,57 @@ function selectDose(id) {
 function updateDoseQtyLabel() {
   const u = state.currentDose.unit || "錠";
   const intOnly = isIntegerOnly(state.currentDose);
+  const isStay = hasStay(state.currentDose);
+  // 民宿品目：数量欄を隠して頭数×泊数の2欄を表示
+  document.getElementById("doseQtySection").classList.toggle("hidden", isStay);
+  document.getElementById("doseStaySection").classList.toggle("hidden", !isStay);
+  if (isStay) {
+    updateDoseTotal();
+    return;
+  }
   document.getElementById("doseQtyLabel").textContent = `${u}数${intOnly ? "（整数のみ）" : "（小数OK：例 6.5）"}`;
   const qtyEl = document.getElementById("doseQty");
   qtyEl.step = intOnly ? "1" : "0.25";
 }
+// 民宿の頭数・泊数を読み取る（それぞれ1以上の整数）
+function getStayInputs() {
+  const heads = Math.max(0, Math.round(parseFloat(document.getElementById("stayHeads").value) || 0));
+  const nights = Math.max(0, Math.round(parseFloat(document.getElementById("stayNights").value) || 0));
+  return { heads, nights };
+}
 function updateDoseTotal() {
   if (!state.currentDose) return;
+  if (hasStay(state.currentDose)) {
+    const { heads, nights } = getStayInputs();
+    const total = Math.round(state.currentDose.price * heads * nights);
+    document.getElementById("doseTotalAmount").textContent = "¥" + total.toLocaleString();
+    return;
+  }
   let qty = parseFloat(document.getElementById("doseQty").value) || 0;
   if (isIntegerOnly(state.currentDose)) qty = Math.round(qty);
   const total = Math.round(state.currentDose.price * qty);
   document.getElementById("doseTotalAmount").textContent = "¥" + total.toLocaleString();
 }
 function confirmDose() {
+  const prod = state.currentDose;
+  // 民宿品目：頭数×泊数で数量を算出し、表示用フィールドを添えて追加
+  if (hasStay(prod)) {
+    const { heads, nights } = getStayInputs();
+    if (heads <= 0 || nights <= 0) {
+      showToast("頭数と泊数を入力してください", "error");
+      return;
+    }
+    addToCart(prod, heads * nights, null, { stayHeads: heads, stayNights: nights });
+    closeDoseModal();
+    return;
+  }
   let qty = parseFloat(document.getElementById("doseQty").value) || 0;
-  if (isIntegerOnly(state.currentDose)) qty = Math.round(qty);
+  if (isIntegerOnly(prod)) qty = Math.round(qty);
   if (qty <= 0) {
-    const u = (state.currentDose && state.currentDose.unit) || "錠";
+    const u = (prod && prod.unit) || "錠";
     showToast(`${u}数を入力してください`, "error");
     return;
   }
-  const prod = state.currentDose;
   // 1段階目で選んだ商品に担当者選択フラグがあれば、2段階目へ
   if (isStaffPick(prod)) {
     closeDoseModal();
@@ -693,7 +775,7 @@ function confirmMultiPick() {
   const name = sel.map(p => p.name).join("・");
   const price = sel.reduce((s, p) => s + (p.price || 0), 0);
   const gigi = sel.reduce((s, p) => s + (p.gigi || 0), 0);
-  state.cart.push({
+  state.cart.push(finalizeNewCartItem({
     itemId: itemIdCounter++,
     productId: null,
     isPowder: false,
@@ -711,7 +793,7 @@ function confirmMultiPick() {
     isNurseMark: false,
     masterPrice: price,  // 技術料の按分計算用（編集で単価が変われば技術料も比例）
     gigi: gigi
-  });
+  }));
   closeMultiPickModal();
   renderCart();
 }
@@ -827,7 +909,7 @@ function confirmFormula() {
   // 技術料も算出価格そのもの（体重連動の薬剤は単価＝技術料の運用）。
   // masterPriceにも算出価格を入れることで、編集パネルで単価を手修正した場合に
   // 技術料が比例して追従する（calcItemGigi = gigi × price/masterPrice × qty）。
-  state.cart.push({
+  state.cart.push(finalizeNewCartItem({
     itemId: itemIdCounter++,
     productId: formulaProduct.id,
     isPowder: false,
@@ -844,7 +926,7 @@ function confirmFormula() {
     isNurseMark: false,
     masterPrice: calcPrice,
     gigi: calcPrice
-  });
+  }));
 
   closeFormulaModal();
   renderCart();
@@ -880,7 +962,7 @@ function confirmPrice() {
     return;
   }
   if (!canAddItem()) return;
-  state.cart.push({
+  state.cart.push(finalizeNewCartItem({
     itemId: itemIdCounter++,
     productId: priceInputProduct.id,
     isPowder: false,
@@ -898,7 +980,7 @@ function confirmPrice() {
     isNurseMark: false,
     masterPrice: price,
     gigi: price
-  });
+  }));
   closePriceModal();
   renderCart();
 }
@@ -977,7 +1059,7 @@ function confirmPowder() {
     return;
   }
   if (!canAddItem()) return;
-  state.cart.push({
+  state.cart.push(finalizeNewCartItem({
     itemId: itemIdCounter++,
     productId: null,
     isPowder: true,
@@ -993,7 +1075,7 @@ function confirmPowder() {
     // 【第2弾】粉薬は技術料なし
     masterPrice: 0,
     gigi: 0
-  });
+  }));
   closePowderModal();
   renderCart();
 }
@@ -1029,7 +1111,7 @@ function confirmFree() {
     return;
   }
   if (!canAddItem()) return;
-  state.cart.push({
+  state.cart.push(finalizeNewCartItem({
     itemId: itemIdCounter++,
     productId: null,
     isPowder: false,
@@ -1047,7 +1129,7 @@ function confirmFree() {
     isNurseMark: false,
     masterPrice: 0,
     gigi: 0
-  });
+  }));
   closeFreeModal();
   renderCart();
 }
@@ -1065,15 +1147,17 @@ function renderCart() {
     list.innerHTML = state.cart.map(item => {
       const amount = Math.round(item.qty * item.price);
       const dispName = cartDispName(item);
-      const cls = (item.isPowder ? "powder" : "") + (item.itemId === state.selectedItemId ? " selected" : "");
-      const detailLine = `${qtyUnitText(item)} × ¥${item.price.toLocaleString()}`;
+      const cls = (item.isPowder ? "powder" : "")
+        + (item.isReturn ? " return-item" : "")
+        + (item.itemId === state.selectedItemId ? " selected" : "");
+      const detailLine = `${qtyUnitText(item)} × ${yenDisp(item.price)}`;
       return `
         <div class="cart-item ${cls}" onclick="selectCartItem(${item.itemId})">
           <button class="cart-item-del" onclick="event.stopPropagation();removeCartItem(${item.itemId})" title="削除">×</button>
           <div class="cart-item-name">${escapeHtml(dispName)}</div>
           <div class="cart-item-detail">
             <span>${detailLine}</span>
-            <span class="cart-item-amount">¥${amount.toLocaleString()}</span>
+            <span class="cart-item-amount">${yenDisp(amount)}</span>
           </div>
         </div>
       `;
@@ -1121,8 +1205,18 @@ function applyEdit() {
   }
   item.qty = qty;
   item.price = priceInput;
+  // 返品行：編集で正の値を入れられてもマイナスを維持
+  if (item.isReturn) {
+    item.price = -Math.abs(priceInput);
+    item.gigi = 0;
+  }
+  // 民宿行：数量を手修正して頭数×泊数と合わなくなったら通常数量表示に戻す
+  if (item.stayHeads && item.stayNights && qty !== item.stayHeads * item.stayNights) {
+    delete item.stayHeads;
+    delete item.stayNights;
+  }
   // gigi:same 品目：単価変更時に技術料も同額に追従
-  if (item.isGigiSame) {
+  if (item.isGigiSame && !item.isReturn) {
     item.gigi = priceInput;
     item.masterPrice = priceInput;
   }
@@ -1231,10 +1325,10 @@ function renderReceiptHtml(forPrint, invoiceNo) {
     return `<div class="${forPrint ? 'print-item-line' : 'receipt-item-line'}">
       <div class="${forPrint ? 'print-item-name' : 'receipt-item-name'}">
         <span>${escapeHtml(dispName)}</span>
-        <span>¥${amount.toLocaleString()}</span>
+        <span>${yenDisp(amount)}</span>
       </div>
       <div class="${forPrint ? 'print-item-detail' : 'receipt-item-detail'}">
-        ${qtyUnitText(item)} × ¥${item.price.toLocaleString()}
+        ${qtyUnitText(item)} × ${yenDisp(item.price)}
       </div>
     </div>`;
   }).join("");
@@ -1422,7 +1516,9 @@ async function sendToGAS() {
       unit: (item.group === "診療" && !item.isPowder) ? "" : item.unit,
       price: item.price,
       amount: Math.round(item.qty * item.price),
-      isPowder: item.isPowder
+      isPowder: item.isPowder,
+      // 民宿：記録上も「2頭×3泊」表示にするための表示用テキスト
+      qtyText: (item.stayHeads && item.stayNights) ? `${item.stayHeads}頭×${item.stayNights}泊` : ""
     })),
     subtotal: subtotal,
     tax: tax,
@@ -1464,6 +1560,8 @@ function clearAll() {
 function clearCart() {
   state.cart = [];
   state.selectedItemId = null;
+  returnMode = false;
+  updateReturnModeBtn();
   document.getElementById("ownerName").value = "";
   document.getElementById("petName").value = "";
   document.getElementById("animalType").value = "";

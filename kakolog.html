@@ -267,6 +267,18 @@ body {
         <option value="その他">その他</option>
       </select>
     </div>
+    <div class="field">
+      <label for="qStaff">担当者</label>
+      <select id="qStaff">
+        <option value="">すべて</option>
+        <option value="南繁">南繁</option>
+        <option value="辻松淳二">辻松淳二</option>
+        <option value="腰原あすか">腰原あすか</option>
+        <option value="城戸大樹">城戸大樹</option>
+        <option value="中出哲也">中出哲也</option>
+        <option value="要田正治">要田正治</option>
+      </select>
+    </div>
     <div class="field" style="grid-column: 1 / -1;">
       <label>会計日（期間。1日だけなら同じ日を両方に）</label>
       <div class="date-pair">
@@ -285,6 +297,119 @@ body {
 <div class="results" id="results">
   <div class="empty-note">検索条件を入力して「検索」を押してください</div>
 </div>
+
+<!-- 再印刷用エリア（画面上は非表示・印刷時のみ表示） -->
+<div class="print-area" id="reprintArea"></div>
+
+<style>
+/* ===== 再印刷（明細書・再発行）用スタイル ===== */
+.btn-reprint {
+  margin-top: 10px;
+  padding: 8px 16px;
+  background: #fff;
+  border: 1px solid #d8d2c4;
+  border-radius: 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: #5c5850;
+  cursor: pointer;
+}
+.btn-reprint:active { background: #FCD97D; }
+
+.print-area { display: none; }
+@media print {
+  body * { visibility: hidden; }
+  .print-area, .print-area * { visibility: visible; }
+  .print-area { display: block; position: absolute; left: 0; top: 0; }
+  @page { size: A5 portrait; margin: 0; }
+}
+.print-page {
+  width: 148mm;
+  height: 210mm;
+  padding: 12mm 10mm;
+  background: #fff;
+  position: relative;
+  font-size: 11px;
+  color: #000;
+  font-family: 'Noto Sans JP', sans-serif;
+}
+.print-watermark {
+  position: absolute;
+  top: 12mm;
+  right: 10mm;
+  font-family: 'Noto Serif JP', serif;
+  font-size: 16px;
+  font-weight: 700;
+  border: 2px solid #14472d;
+  color: #14472d;
+  padding: 3px 10px;
+  letter-spacing: 0.3em;
+}
+.print-title {
+  text-align: center;
+  font-family: 'Noto Serif JP', serif;
+  font-weight: 700;
+  font-size: 18px;
+  letter-spacing: 0.4em;
+  margin: 8px 0;
+}
+.print-meta {
+  font-size: 11px;
+  line-height: 1.7;
+  margin-bottom: 4px;
+  display: flex;
+  justify-content: space-between;
+}
+.print-customer {
+  font-size: 14px;
+  font-weight: 700;
+  margin: 4px 0 8px;
+}
+.print-divider { border-top: 1px dashed #888; margin: 6px 0; }
+.print-divider-solid { border-top: 1.5px solid #000; margin: 6px 0; }
+.print-item-line {
+  display: flex;
+  justify-content: space-between;
+  font-size: 12px;
+  margin-bottom: 5px;
+  gap: 8px;
+}
+.print-item-line .item-left { flex: 1; }
+.print-item-line .item-right { white-space: nowrap; }
+.print-totals-row {
+  display: flex;
+  justify-content: space-between;
+  font-size: 11px;
+  margin-bottom: 2px;
+}
+.print-totals-row.grand {
+  font-size: 16px;
+  font-weight: 700;
+  margin-top: 6px;
+  padding-top: 4px;
+  border-top: 1.5px solid #000;
+}
+.print-thanks {
+  margin-top: 16px;
+  text-align: center;
+  font-size: 10px;
+  line-height: 1.7;
+  color: #333;
+}
+.print-hospital-name {
+  text-align: center;
+  font-family: 'Noto Serif JP', serif;
+  font-size: 16px;
+  font-weight: 700;
+  color: #14472d;
+}
+.print-hospital-info {
+  text-align: center;
+  font-size: 10px;
+  color: #555;
+  line-height: 1.5;
+}
+</style>
 
 <script src="config.js"></script>
 <script src="kakolog.js"></script>
