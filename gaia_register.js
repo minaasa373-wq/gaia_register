@@ -732,6 +732,13 @@ function isDefaultOn(p) {
   return (p.memo || "").includes("default:on");
 }
 
+// メモ欄の prefix:XXX を取り出す（例 "prefix:血液検査" → "血液検査"）。
+// default:on と併記されていても動作する（例 "default:on prefix:血液検査"）。
+function getPrefix(p) {
+  const m = (p.memo || "").match(/prefix:(\S+)/);
+  return m ? m[1] : "";
+}
+
 // カート内に指定の品名がすでに含まれているか判定する。
 // 複数選択は「採血・血液検査15・Lip」のように1行へ合算されるため、
 // 行の品名を「・」で分解して完全一致で探す。
@@ -739,7 +746,14 @@ function cartHasItemNamed(name) {
   return state.cart.some(item => {
     // 【返品】接頭辞や看護師＊印を外した素の品名で比較する
     const raw = String(item.name || "");
-    return raw.split("・").some(n => n.replace(/＊$/, "").trim() === name);
+    return raw.split("・").some(chunk => {
+      // 先頭要素には prefix（「血液検査 」等）が付いていることがあるので、
+      // 最後の半角スペース以降を品名本体として取り出して比較する
+      let n = chunk.replace(/＊$/, "").trim();
+      const sp = n.lastIndexOf(" ");
+      if (sp !== -1) n = n.slice(sp + 1);
+      return n === name;
+    });
   });
 }
 
@@ -816,7 +830,11 @@ function confirmMultiPick() {
   }
   if (!canAddItem()) return;
   // 選択項目を1行に合算（品名は「・」区切りで連結、単価・技術料は合計）
-  const name = sel.map(p => p.name).join("・");
+  // 行内に prefix:XXX を持つ項目があれば、行頭に「XXX 」を1回だけ付ける
+  //（例：採血＋Aセット → 「血液検査 採血・Aセット」）
+  const prefix = sel.map(getPrefix).find(px => px) || "";
+  const joined = sel.map(p => p.name).join("・");
+  const name = prefix ? `${prefix} ${joined}` : joined;
   const price = sel.reduce((s, p) => s + (p.price || 0), 0);
   const gigi = sel.reduce((s, p) => s + (p.gigi || 0), 0);
   state.cart.push(finalizeNewCartItem({
