@@ -343,8 +343,11 @@ function renderProducts() {
             <div class="tile-dose">${group.length}項目・複数選択可</div>
           </div>`;
         }
+        // グループ内に計算式／時価の品目があればタイルにもマークを出す
+        const grpFormula = group.some(hasFormula) ? `<span class="tile-formula">計</span>` : "";
+        const grpPrice = (!grpFormula && group.some(hasGigiSame)) ? `<span class="tile-formula">¥</span>` : "";
         return `<div class="product-tile" style="--tile-color:${color}" onclick="openDoseModalByGroup('${escapeHtml(p.modalGroup)}')">
-          ${fav}
+          ${fav}${grpFormula}${grpPrice}
           <span class="tile-multidose">▾</span>
           <div class="tile-name">${escapeHtml(p.modalGroup)}</div>
           <div class="tile-dose">${group.length}種類</div>
@@ -707,9 +710,14 @@ function updateDoseQtyLabel() {
   const u = state.currentDose.unit || "錠";
   const intOnly = isIntegerOnly(state.currentDose);
   const isStay = hasStay(state.currentDose);
-  // 民宿品目：数量欄を隠して頭数×泊数の2欄を表示
-  document.getElementById("doseQtySection").classList.toggle("hidden", isStay);
-  document.getElementById("doseStaySection").classList.toggle("hidden", !isStay);
+  // 計算式・時価品目：数量も金額も次のモーダルで入力するので、この画面では入力欄を出さない
+  const isNext = hasFormula(state.currentDose) || hasGigiSame(state.currentDose);
+  document.getElementById("doseQtySection").classList.toggle("hidden", isStay || isNext);
+  document.getElementById("doseStaySection").classList.toggle("hidden", !isStay || isNext);
+  if (isNext) {
+    updateDoseTotal();
+    return;
+  }
   if (isStay) {
     updateDoseTotal();
     return;
@@ -726,6 +734,15 @@ function getStayInputs() {
 }
 function updateDoseTotal() {
   if (!state.currentDose) return;
+  // 計算式・時価品目：金額はこの画面では確定しないため案内表示に差し替える
+  if (hasFormula(state.currentDose)) {
+    document.getElementById("doseTotalAmount").textContent = "次で数量を入力";
+    return;
+  }
+  if (hasGigiSame(state.currentDose)) {
+    document.getElementById("doseTotalAmount").textContent = "次で金額を入力";
+    return;
+  }
   if (hasStay(state.currentDose)) {
     const { heads, nights } = getStayInputs();
     const total = Math.round(state.currentDose.price * heads * nights);
@@ -739,6 +756,20 @@ function updateDoseTotal() {
 }
 function confirmDose() {
   const prod = state.currentDose;
+  // 計算式品目（formula:）：数量入力は計算式モーダル側で行うため、区分だけ受け取って次へ。
+  // モーダルグループで束ねられた formula: 品目（ベトメディン注 静脈/注入 等）が
+  // 単価0円のままカート追加されるのを防ぐ。
+  if (hasFormula(prod)) {
+    closeDoseModal();
+    openFormulaModalForProduct(prod);
+    return;
+  }
+  // 時価品目（gigi:same）：同様に金額入力モーダルへ引き継ぐ
+  if (hasGigiSame(prod)) {
+    closeDoseModal();
+    openPriceModalForProduct(prod);
+    return;
+  }
   // 民宿品目：頭数×泊数で数量を算出し、表示用フィールドを添えて追加
   if (hasStay(prod)) {
     const { heads, nights } = getStayInputs();
@@ -946,10 +977,17 @@ let formulaParams = null;   // { varName, coeff, base }
 function openFormulaModal(productId) {
   const p = state.products.find(x => x.id == productId);
   if (!p) return;
+  openFormulaModalForProduct(p);
+}
+
+// 商品オブジェクトを直接受け取る版。
+// 区分モーダル（モーダルグループ）で用量を選んだあとの2段階目としても使う。
+function openFormulaModalForProduct(p) {
+  if (!p) return;
   const params = parseFormula(p);
   if (!params) {
     // パース失敗→通常のカート追加にフォールバック
-    addToCartById(productId);
+    addToCart(p, 1);
     return;
   }
   formulaProduct = p;
@@ -1054,6 +1092,12 @@ let priceInputProduct = null;
 
 function openPriceModal(productId) {
   const p = state.products.find(x => x.id == productId);
+  if (!p) return;
+  openPriceModalForProduct(p);
+}
+
+// 商品オブジェクトを直接受け取る版（区分モーダルからの2段階目用）
+function openPriceModalForProduct(p) {
   if (!p) return;
   priceInputProduct = p;
   document.getElementById("priceInputProductName").textContent =
