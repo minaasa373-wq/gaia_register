@@ -27,10 +27,57 @@ const MAX_STAFF = 4;       // 【第2弾】担当獣医は最大4人
 
 let itemIdCounter = 1;
 
+// ===== 日付ユーティリティ =====
+// 端末のローカル時刻で「YYYY-MM-DD」を返す。
+// toISOString() はUTCに変換されるため、日本時間(UTC+9)の朝9時前は前日の日付に
+// なってしまう。開院準備でページを開くと前日日付になる不具合の原因だったので、
+// ローカルの年月日を直接組み立てる。
+function todayLocal() {
+  const d = new Date();
+  const y = d.getFullYear();
+  const m = String(d.getMonth() + 1).padStart(2, "0");
+  const day = String(d.getDate()).padStart(2, "0");
+  return `${y}-${m}-${day}`;
+}
+
+// 画面を開いたまま日付が変わった場合に、会計日を自動で今日へ更新する。
+// カートに商品が入っている会計中は書き換えない（会計途中に日付が変わると混乱するため）。
+// 変更した場合はトーストで知らせる。
+let lastKnownDate = "";
+
+function refreshVisitDateIfStale() {
+  const el = document.getElementById("visitDate");
+  if (!el) return;
+  const today = todayLocal();
+  if (lastKnownDate === today) return;      // 日付は変わっていない
+  if (el.value === today) { lastKnownDate = today; return; }
+
+  // 会計中（カートに商品あり）は自動で書き換えず、次のクリア時に反映させる
+  if (state.cart.length > 0) return;
+
+  const before = el.value;
+  el.value = today;
+  lastKnownDate = today;
+  if (before && before !== today) {
+    showToast("日付が変わったため会計日を " + today + " に更新しました");
+  }
+}
+
 // ===== 初期化 =====
 window.addEventListener("DOMContentLoaded", async () => {
-  // 日付を今日に
-  document.getElementById("visitDate").value = new Date().toISOString().slice(0, 10);
+  // 日付を今日に（ローカル時刻基準）
+  document.getElementById("visitDate").value = todayLocal();
+  lastKnownDate = todayLocal();
+
+  // 日跨ぎ対策：1分ごとに日付を点検し、変わっていれば会計日を更新する
+  setInterval(refreshVisitDateIfStale, 60 * 1000);
+
+  // タブを再表示した時・ウィンドウにフォーカスが戻った時にも即点検する
+  // （iPadでバックグラウンドに回っている間はタイマーが止まるため）
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) refreshVisitDateIfStale();
+  });
+  window.addEventListener("focus", refreshVisitDateIfStale);
 
   // 検索バー
   document.getElementById("searchInput").addEventListener("input", (e) => {
@@ -1631,6 +1678,9 @@ function clearCart() {
   // 【第2弾】担当者プルダウンを1人にリセット
   resetStaffArea();
   renderCart();
+  // 会計が終わったタイミングで日付を点検する。
+  // （会計中は自動更新を止めているため、ここで確実に今日へ戻す）
+  refreshVisitDateIfStale();
 }
 
 // ===== 共通ユーティリティ =====
