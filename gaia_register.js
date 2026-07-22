@@ -1678,9 +1678,15 @@ function clearCart() {
   // 【第2弾】担当者プルダウンを1人にリセット
   resetStaffArea();
   renderCart();
-  // 会計が終わったタイミングで日付を点検する。
-  // （会計中は自動更新を止めているため、ここで確実に今日へ戻す）
-  refreshVisitDateIfStale();
+  // 会計が終わったら日付は必ず今日に戻す。
+  // 過去日で入力した会計（前日分の打ち直し等）の設定が次の会計に残らないようにする。
+  const today = todayLocal();
+  const dateEl = document.getElementById("visitDate");
+  if (dateEl.value !== today) {
+    dateEl.value = today;
+    showToast("会計日を本日（" + today + "）に戻しました");
+  }
+  lastKnownDate = today;
 }
 
 // ===== 共通ユーティリティ =====
