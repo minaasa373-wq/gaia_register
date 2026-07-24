@@ -492,9 +492,9 @@ function normalizeSearch(s) {
   return t.replace(/\s+/g, "");
 }
 
-// ===== 単位サフィックス（錠は省略、それ以外は「 /本」のように表示） =====
+// ===== 単位サフィックス（無記入なら表示なし、記入ありは「 /本」のように表示） =====
 function unitSuffix(unit) {
-  if (!unit || unit === "錠") return "";
+  if (!unit) return "";
   return ` <span style="font-size:10px;color:var(--muted);font-weight:400;">/${escapeHtml(unit)}</span>`;
 }
 
@@ -517,6 +517,7 @@ function getCategoryColor(category, override) {
     // 診療系（商品マスタ）
     "診察": "#7F77DD",
     "注射": "#D4537E",
+    "ワクチン・チップ": "#2596A8",
     "検査": "#378ADD",
     "処置": "#1D9E75",
     "手術": "#993C1D",
@@ -529,7 +530,8 @@ function getCategoryColor(category, override) {
     "処方薬（外用・軟膏）": "#EF9F27",
     "処方薬（点眼薬）": "#7F77DD",
     "処方薬（注射）": "#D4537E",
-    "ワクチン・駆虫薬": "#1D9E75",
+    "駆虫薬": "#1D9E75",
+    "ワクチン・駆虫薬": "#1D9E75",  // 旧カテゴリ名（移行期の互換用）
     "フード・サプリ": "#C08A2E",
     "消耗品・医療材料": "#888780",
     "計算式必要": "#C8553D"
@@ -591,7 +593,7 @@ function addToCart(product, qty, staffRole, extra) {
       subcategory: product.subcategory || "",  // ワクチン判定用
       qty: qty,
       price: product.price,
-      unit: product.unit || "錠",
+      unit: product.unit || "",
       qtyType: product.qtyType || "",
       staffRole: staffRole,
       isNurseMark: staffRole === "nurse",
@@ -680,7 +682,7 @@ function openDoseModalByGroup(modalGroup) {
   const opts = doseGroup.map(p => `
     <div class="dose-opt${p === state.currentDose ? " selected" : ""}" data-id="${p.id}" onclick="selectDose(${p.id})">
       <div class="dose-value">${escapeHtml(p.dose || p.name || "—")}</div>
-      <div class="dose-price">¥${p.price.toLocaleString()}${p.unit && p.unit !== "錠" ? " /" + escapeHtml(p.unit) : ""}</div>
+      <div class="dose-price">¥${p.price.toLocaleString()}${p.unit ? " /" + escapeHtml(p.unit) : ""}</div>
     </div>
   `).join("");
   document.getElementById("doseOptions").innerHTML = opts;
@@ -707,7 +709,7 @@ function selectDose(id) {
   updateDoseTotal();
 }
 function updateDoseQtyLabel() {
-  const u = state.currentDose.unit || "錠";
+  const u = state.currentDose.unit || "";
   const intOnly = isIntegerOnly(state.currentDose);
   const isStay = hasStay(state.currentDose);
   // 計算式・時価品目：数量も金額も次のモーダルで入力するので、この画面では入力欄を出さない
@@ -722,7 +724,9 @@ function updateDoseQtyLabel() {
     updateDoseTotal();
     return;
   }
-  document.getElementById("doseQtyLabel").textContent = `${u}数${intOnly ? "（整数のみ）" : "（小数OK：例 6.5）"}`;
+  // 単位が無記入なら「数量」、記入ありなら「錠数」「本数」のように表示
+  const qtyWord = u ? `${u}数` : "数量";
+  document.getElementById("doseQtyLabel").textContent = `${qtyWord}${intOnly ? "（整数のみ）" : "（小数OK：例 6.5）"}`;
   const qtyEl = document.getElementById("doseQty");
   qtyEl.step = intOnly ? "1" : "0.25";
 }
@@ -784,8 +788,8 @@ function confirmDose() {
   let qty = parseFloat(document.getElementById("doseQty").value) || 0;
   if (isIntegerOnly(prod)) qty = Math.round(qty);
   if (qty <= 0) {
-    const u = (prod && prod.unit) || "錠";
-    showToast(`${u}数を入力してください`, "error");
+    const u = (prod && prod.unit) || "";
+    showToast(`${u ? u + "数" : "数量"}を入力してください`, "error");
     return;
   }
   // 1段階目で選んだ商品に担当者選択フラグがあれば、2段階目へ
@@ -1067,7 +1071,7 @@ function confirmFormula() {
     subcategory: formulaProduct.subcategory || "",
     qty: 1,
     price: calcPrice,
-    unit: formulaProduct.unit || "錠",
+    unit: formulaProduct.unit || "",
     qtyType: formulaProduct.qtyType || "",
     staffRole: null,
     isNurseMark: false,
@@ -1127,7 +1131,7 @@ function confirmPrice() {
     subcategory: priceInputProduct.subcategory || "",
     qty: 1,
     price: price,
-    unit: priceInputProduct.unit || "錠",
+    unit: priceInputProduct.unit || "",
     qtyType: priceInputProduct.qtyType || "",
     staffRole: null,
     isNurseMark: false,
@@ -1154,14 +1158,14 @@ function openDrugQtyModal(productId) {
   const intOnly = isIntegerOnly(p);
   document.getElementById("drugQtyProductName").textContent = p.name;
   document.getElementById("drugQtyUnitPrice").textContent =
-    "¥" + p.price.toLocaleString() + (p.unit && p.unit !== "錠" ? " / " + p.unit : "");
+    "¥" + p.price.toLocaleString() + (p.unit ? " / " + p.unit : "");
   document.getElementById("drugQtyLabel").textContent =
     "数量" + (intOnly ? "（整数のみ）" : "（小数OK：例 6.5）");
   const input = document.getElementById("drugQtyInput");
   input.value = "";
   input.step = intOnly ? "1" : "0.25";
   input.placeholder = intOnly ? "例：3" : "例：6.5";
-  document.getElementById("drugQtyUnit").textContent = p.unit || "錠";
+  document.getElementById("drugQtyUnit").textContent = p.unit || "";
   document.getElementById("drugQtyModal").classList.remove("hidden");
   setTimeout(() => input.focus(), 100);
 }
@@ -1783,7 +1787,7 @@ function getDemoStaff() {
 function _dp(o) {
   return Object.assign({
     group: "診療", subcategory: "", modalGroup: "", dose: "",
-    unit: "錠", qtyType: "", gigi: 0, staffPick: "", favorite: "",
+    unit: "", qtyType: "", gigi: 0, staffPick: "", favorite: "",
     keywords: "", memo: "", color: ""
   }, o);
 }
