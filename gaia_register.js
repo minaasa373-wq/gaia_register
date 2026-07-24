@@ -498,15 +498,14 @@ function unitSuffix(unit) {
   return ` <span style="font-size:10px;color:var(--muted);font-weight:400;">/${escapeHtml(unit)}</span>`;
 }
 
-// ===== 数量＋単位の文字列（診療行為は単位を出さない、薬・物販は単位を出す） =====
-// 例）診療：「1」 / 薬・物販：「1錠」「2本」「20包」
+// ===== 数量＋単位の文字列 =====
+// 単位はマスタの記入どおりに表示する。
+// 例）単位なし：「1」 / 単位あり：「1錠」「2本」「4針」
 function qtyUnitText(item) {
   // 民宿：頭数×泊数の表示（例「2頭×3泊」）
   if (item.stayHeads && item.stayNights) {
     return `${item.stayHeads}頭×${item.stayNights}泊`;
   }
-  const isCare = item.group === "診療";
-  if (isCare && !item.isPowder) return `${item.qty}`;
   return `${item.qty}${item.unit || ""}`;
 }
 
@@ -1335,7 +1334,7 @@ function selectCartItem(itemId) {
   const dispName = cartDispName(item);
   document.getElementById("editPanelTitle").textContent = "編集中：" + dispName;
   document.getElementById("editQty").value = item.qty;
-  document.getElementById("editQtyUnit").textContent = (item.group === "診療" && !item.isPowder) ? "" : item.unit;
+  document.getElementById("editQtyUnit").textContent = item.unit || "";
   document.getElementById("editPrice").value = item.price;
   // 単価ラベル：粉薬の場合は「1包単価」、それ以外は「単価」
   const priceLabel = document.querySelectorAll("#editPanel .edit-row label")[1];
@@ -1670,7 +1669,7 @@ async function sendToGAS() {
     items: state.cart.map(item => ({
       name: cartDispName(item),
       qty: item.qty,
-      unit: (item.group === "診療" && !item.isPowder) ? "" : item.unit,
+      unit: item.unit || "",
       price: item.price,
       amount: Math.round(item.qty * item.price),
       isPowder: item.isPowder,
