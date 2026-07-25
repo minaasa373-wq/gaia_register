@@ -359,12 +359,15 @@ function renderProducts() {
       //（フード等：1タップ1個。3個なら3回タップの運用）
       const needFormula = hasFormula(p);
       const needPriceInput = !needFormula && hasGigiSame(p);
-      const needStaffPick = !needFormula && !needPriceInput && isStaffPick(p);
+      // 担当者選択は計算式・時価とも併用できる（金額確定後に担当者を選ぶ2段階）。
+      // タイルのタップ先は金額入力側だが、担当者選択が必要なことは「担」印で示す。
+      const needStaffPick = isStaffPick(p);
+      const staffPickFirst = needStaffPick && !needFormula && !needPriceInput;
       const hasQtyType = (p.qtyType || "").toString().trim() !== "";
       const needDrugQty = !needFormula && !needPriceInput && !needStaffPick && p.group === "薬・物販" && hasQtyType;
       const clickAction = needFormula ? `openFormulaModal(${p.id})`
                         : needPriceInput ? `openPriceModal(${p.id})`
-                        : needStaffPick ? `openStaffPickModal(${p.id})`
+                        : staffPickFirst ? `openStaffPickModal(${p.id})`
                         : needDrugQty ? `openDrugQtyModal(${p.id})`
                         : `addToCartById(${p.id})`;
       const pickMark = needStaffPick ? `<span class="tile-staffpick">担</span>` : "";
@@ -965,11 +968,65 @@ function openStaffPickModalForProduct(product, qty) {
   if (!canAddItem()) return;
   pendingStaffPickProduct = product;
   pendingQty = qty;
+  // 金額確定済み待ちの状態が残っていたら破棄（取り違え防止）
+  pendingPricedProduct = null;
+  pendingPricedPrice = 0;
+  pendingPricedIsGigiSame = false;
   document.getElementById("staffPickProductName").textContent =
     product.dose ? `${product.name}（${product.dose}）` : product.name;
   document.getElementById("staffPickModal").classList.remove("hidden");
 }
+// 金額が確定済みの品目（gigi:same / formula:）を担当者選択待ちにする。
+// 通常品目は addToCart で数量から金額を出せるが、これらは算出済みの金額を
+// 保持したまま担当者を選ばせる必要があるため、専用の受け渡しを用意する。
+let pendingPricedProduct = null;
+let pendingPricedPrice = 0;
+let pendingPricedIsGigiSame = false;
+
+function openStaffPickModalForPricedItem(product, price, isGigiSame) {
+  if (!canAddItem()) return;
+  pendingPricedProduct = product;
+  pendingPricedPrice = price;
+  pendingPricedIsGigiSame = !!isGigiSame;
+  pendingStaffPickProduct = null;
+  document.getElementById("staffPickProductName").textContent =
+    product.dose ? `${product.name}（${product.dose}）` : product.name;
+  document.getElementById("staffPickModal").classList.remove("hidden");
+}
+
+// 金額確定済み品目をカートに積む（gigi:same / formula: 共通）
+// staffRole が "nurse" のときは技術料0＋＊印になる（calcItemGigi 側で処理）。
+function pushPricedCartItem(product, price, staffRole, isGigiSame) {
+  const item = {
+    itemId: itemIdCounter++,
+    productId: product.id,
+    isPowder: false,
+    group: product.group || "診療",
+    name: product.name,
+    dose: product.dose || "",
+    category: product.category,
+    subcategory: product.subcategory || "",
+    qty: 1,
+    price: price,
+    unit: product.unit || "",
+    qtyType: product.qtyType || "",
+    staffRole: staffRole || null,
+    isNurseMark: staffRole === "nurse",
+    masterPrice: price,
+    gigi: price
+  };
+  if (isGigiSame) item.isGigiSame = true;
+  state.cart.push(finalizeNewCartItem(item));
+}
+
 function selectStaffRole(role) {
+  // 金額確定済み品目（時価・計算式）からの担当者選択
+  if (pendingPricedProduct) {
+    pushPricedCartItem(pendingPricedProduct, pendingPricedPrice, role, pendingPricedIsGigiSame);
+    closeStaffPickModal();
+    renderCart();
+    return;
+  }
   if (!pendingStaffPickProduct) return;
   addToCart(pendingStaffPickProduct, pendingQty, role);
   closeStaffPickModal();
@@ -978,6 +1035,9 @@ function closeStaffPickModal() {
   document.getElementById("staffPickModal").classList.add("hidden");
   pendingStaffPickProduct = null;
   pendingQty = 1;
+  pendingPricedProduct = null;
+  pendingPricedPrice = 0;
+  pendingPricedIsGigiSame = false;
 }
 
 // ===== 【第3弾】計算補助モーダル =====
@@ -1067,24 +1127,14 @@ function confirmFormula() {
   // 技術料も算出価格そのもの（体重連動の薬剤は単価＝技術料の運用）。
   // masterPriceにも算出価格を入れることで、編集パネルで単価を手修正した場合に
   // 技術料が比例して追従する（calcItemGigi = gigi × price/masterPrice × qty）。
-  state.cart.push(finalizeNewCartItem({
-    itemId: itemIdCounter++,
-    productId: formulaProduct.id,
-    isPowder: false,
-    group: formulaProduct.group || "診療",
-    name: formulaProduct.name,
-    dose: formulaProduct.dose || "",
-    category: formulaProduct.category,
-    subcategory: formulaProduct.subcategory || "",
-    qty: 1,
-    price: calcPrice,
-    unit: formulaProduct.unit || "",
-    qtyType: formulaProduct.qtyType || "",
-    staffRole: null,
-    isNurseMark: false,
-    masterPrice: calcPrice,
-    gigi: calcPrice
-  }));
+  const prod = formulaProduct;
+  // 担当者選択フラグがある品目は、カート追加前に担当者を選ばせる
+  if (isStaffPick(prod)) {
+    closeFormulaModal();
+    openStaffPickModalForPricedItem(prod, calcPrice, false);
+    return;
+  }
+  pushPricedCartItem(prod, calcPrice, null, false);
 
   closeFormulaModal();
   renderCart();
@@ -1143,25 +1193,14 @@ function confirmPrice() {
     return;
   }
   if (!canAddItem()) return;
-  state.cart.push(finalizeNewCartItem({
-    itemId: itemIdCounter++,
-    productId: priceInputProduct.id,
-    isPowder: false,
-    isGigiSame: true,
-    group: priceInputProduct.group || "診療",
-    name: priceInputProduct.name,
-    dose: priceInputProduct.dose || "",
-    category: priceInputProduct.category,
-    subcategory: priceInputProduct.subcategory || "",
-    qty: 1,
-    price: price,
-    unit: priceInputProduct.unit || "",
-    qtyType: priceInputProduct.qtyType || "",
-    staffRole: null,
-    isNurseMark: false,
-    masterPrice: price,
-    gigi: price
-  }));
+  const prod = priceInputProduct;
+  // 担当者選択フラグがある品目は、カート追加前に担当者を選ばせる
+  if (isStaffPick(prod)) {
+    closePriceModal();
+    openStaffPickModalForPricedItem(prod, price, true);
+    return;
+  }
+  pushPricedCartItem(prod, price, null, true);
   closePriceModal();
   renderCart();
 }
