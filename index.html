@@ -775,6 +775,18 @@ button { cursor: pointer; border: none; background: none; }
 .formula-field input:focus {
   border-color: var(--green);
 }
+/* 金額の目安表示（メモ欄の guide: マーカーから生成） */
+.price-guide {
+  background: var(--green-light);
+  border-left: 3px solid var(--green);
+  border-radius: 6px;
+  padding: 8px 12px;
+  margin-bottom: 8px;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--green-dark);
+}
+.price-guide.hidden { display: none; }
 .formula-result {
   background: var(--green-light);
   border-radius: 8px;
@@ -1655,6 +1667,7 @@ button { cursor: pointer; border: none; background: none; }
         <div class="dose-instruction">金額を入力してください</div>
       </div>
       <div class="formula-field">
+        <div id="priceInputGuide" class="price-guide hidden"></div>
         <label>金額（税抜）</label>
         <div class="drug-qty-row">
           <span style="font-size:18px;font-weight:700;">¥</span>

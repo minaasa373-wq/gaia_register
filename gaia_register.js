@@ -406,6 +406,14 @@ function hasGigiSame(p) {
 function hasStay(p) {
   return (p.memo || "").includes("stay");
 }
+// 金額の目安テキストを取得（メモ列の guide: 以降を読む）
+// 例）"gigi:same guide:500円から" → "500円から"
+//     "gigi:same guide:5000～10000円" → "5000～10000円"
+// guide: 以降は行末（または改行）までを自由文字列として扱う。
+function getPriceGuide(p) {
+  const m = (p.memo || "").match(/guide:([^\r\n]*)/);
+  return m ? m[1].trim() : "";
+}
 
 // ===== 返品モード =====
 // ヘッダーの「返品」トグルON中に追加した品目はマイナス金額の返品行になる。
@@ -1105,9 +1113,26 @@ function openPriceModalForProduct(p) {
   priceInputProduct = p;
   document.getElementById("priceInputProductName").textContent =
     p.dose ? `${p.name}（${p.dose}）` : p.name;
-  document.getElementById("priceInputValue").value = "";
+
+  // 目安表示：メモ欄の guide: があれば入力欄の上に出す
+  const guideEl = document.getElementById("priceInputGuide");
+  const guide = getPriceGuide(p);
+  if (guide) {
+    guideEl.textContent = `目安：${guide}`;
+    guideEl.classList.remove("hidden");
+  } else {
+    guideEl.textContent = "";
+    guideEl.classList.add("hidden");
+  }
+
+  // マスタに単価があれば初期値として入れておく（そのままOKで基本料金、変更も可）
+  const input = document.getElementById("priceInputValue");
+  input.value = (p.price && p.price > 0) ? p.price : "";
   document.getElementById("priceInputModal").classList.remove("hidden");
-  setTimeout(() => document.getElementById("priceInputValue").focus(), 100);
+  setTimeout(() => {
+    input.focus();
+    input.select();  // 初期値をすぐ上書きできるよう全選択
+  }, 100);
 }
 
 function confirmPrice() {
@@ -1143,6 +1168,9 @@ function confirmPrice() {
 
 function closePriceModal() {
   document.getElementById("priceInputModal").classList.add("hidden");
+  const guideEl = document.getElementById("priceInputGuide");
+  guideEl.textContent = "";
+  guideEl.classList.add("hidden");
   priceInputProduct = null;
 }
 
