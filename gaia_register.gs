@@ -123,7 +123,12 @@ function searchRecords(params) {
     if (staff  && staffName.indexOf(staff) === -1) continue;
     if (from   && visitDate < from) continue;
     if (to     && visitDate > to)   continue;
-    if (animal && animalType !== animal) continue;  // 完全一致
+    // 動物種：複数ペット対応でP列は「犬,猫」のようにカンマ区切りになりうるため、
+    // 分割していずれかに一致すればヒット扱いにする（単独ペットの既存データも従来通り動く）。
+    if (animal) {
+      const types = animalType.split(",").map(function(s){ return s.trim(); }).filter(String);
+      if (types.indexOf(animal) === -1) continue;
+    }
 
     hits.push({
       recordedAt: normDate(r[0]),          // A: 記録日時（日付部分）

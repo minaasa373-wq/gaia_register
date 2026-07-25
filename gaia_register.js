@@ -24,6 +24,7 @@ const state = {
 
 const MAX_CART_ITEMS = 11; // 印刷の都合上、1会計の明細は11件まで
 const MAX_STAFF = 4;       // 【第2弾】担当獣医は最大4人
+const MAX_PETS = 6;        // ペットは最大6匹（1会計に複数ペットをまとめる場合用）
 
 let itemIdCounter = 1;
 
@@ -162,6 +163,8 @@ async function loadMasterData() {
 function setupUI() {
   // 【第2弾】担当者を複数追加UIとして初期化（1行目）
   initStaffArea();
+  // ペットも複数追加UIとして初期化（1行目）
+  initPetArea();
 
   // カテゴリタブ（各タブにカテゴリ色を適用）
   const cats = ["全て", ...new Set(state.products.map(p => p.category).filter(Boolean))];
@@ -260,6 +263,115 @@ function getSelectedStaff() {
     if (v) names.push(v);
   });
   return names.join(",");
+}
+
+// ===== ペット 複数追加UI =====
+// petArea に「名前入力＋動物種select」の行を動的に追加/削除。最大 MAX_PETS 匹。
+// 1匹目は×ボタンなし。担当獣医のUIと同じ操作感。
+const ANIMAL_TYPES = ["犬", "猫", "ウサギ", "その他"];
+
+function initPetArea() {
+  const area = document.getElementById("petArea");
+  if (!area) return;
+  area.innerHTML = "";
+  buildPetRow(area, 0, false); // 1匹目（削除不可）
+  updateAddPetBtn();
+}
+
+function buildPetRow(container, idx, removable) {
+  const row = document.createElement("div");
+  row.className = "pet-row";
+  row.dataset.idx = idx;
+
+  const nameInput = document.createElement("input");
+  nameInput.type = "text";
+  nameInput.className = "pet-name";
+  nameInput.placeholder = "名前";
+  row.appendChild(nameInput);
+
+  const sel = document.createElement("select");
+  sel.className = "pet-animal";
+  sel.innerHTML = `<option value="">種別</option>` + ANIMAL_TYPES.map(t =>
+    `<option value="${escapeHtml(t)}">${escapeHtml(t)}</option>`
+  ).join("");
+  row.appendChild(sel);
+
+  if (removable) {
+    const delBtn = document.createElement("button");
+    delBtn.className = "btn-remove-staff";
+    delBtn.textContent = "×";
+    delBtn.title = "このペットを削除";
+    delBtn.onclick = () => {
+      row.remove();
+      updateAddPetBtn();
+    };
+    row.appendChild(delBtn);
+  }
+
+  container.appendChild(row);
+}
+
+function addPetRow() {
+  const area = document.getElementById("petArea");
+  if (!area) return;
+  const currentCount = area.querySelectorAll(".pet-row").length;
+  if (currentCount >= MAX_PETS) return;
+  buildPetRow(area, currentCount, true); // 2匹目以降は削除可
+  updateAddPetBtn();
+}
+
+function updateAddPetBtn() {
+  const area = document.getElementById("petArea");
+  const btn = document.getElementById("addPetBtn");
+  if (!area || !btn) return;
+  const currentCount = area.querySelectorAll(".pet-row").length;
+  btn.style.display = currentCount >= MAX_PETS ? "none" : "";
+}
+
+// ペット行を [{name, animal}, ...] で返す。
+// 名前・種別のどちらかでも入っている行だけ拾う（空行は無視）。
+// 保存時にF列（名前）とP列（動物種）へカンマ区切りで入れるため、
+// 位置が対応するよう「名前のない行」でも種別があれば空文字で桁を保つ。
+function getPetRows() {
+  const area = document.getElementById("petArea");
+  if (!area) return [];
+  const rows = [];
+  area.querySelectorAll(".pet-row").forEach(row => {
+    const nameEl = row.querySelector(".pet-name");
+    const animalEl = row.querySelector(".pet-animal");
+    const name = nameEl ? nameEl.value.trim() : "";
+    const animal = animalEl ? animalEl.value : "";
+    if (name || animal) rows.push({ name: name, animal: animal });
+  });
+  return rows;
+}
+
+// ペット名をカンマ区切りで返す（F列用）
+function getPetNames() {
+  return getPetRows().map(r => r.name).join(",");
+}
+
+// 動物種をカンマ区切りで返す（P列用。ペット名と位置が対応する）
+function getAnimalTypes() {
+  return getPetRows().map(r => r.animal).join(",");
+}
+
+// 明細書用のペット表示を組み立てる
+// 例）「（ポチ ちゃん（D）、タマ ちゃん（C））」
+//     名前のみ → 「（ポチ ちゃん）」 / 種別のみ → 「（D）」 / 両方なし → 空
+function buildPetDisplay(rows) {
+  const parts = [];
+  (rows || []).forEach(r => {
+    const initial = animalInitial(r.animal);
+    if (r.name && initial) {
+      parts.push(`${escapeHtml(r.name)} ちゃん（${initial}）`);
+    } else if (r.name) {
+      parts.push(`${escapeHtml(r.name)} ちゃん`);
+    } else if (initial) {
+      parts.push(`（${initial}）`);
+    }
+  });
+  return parts.length ? `（${parts.join("、")}）` : "";
 }
 
 // 担当人数を返す（選択済みの行だけカウント）
@@ -1501,7 +1613,6 @@ function openReceipt() {
   }
 
   const ownerName = document.getElementById("ownerName").value.trim();
-  const petName = document.getElementById("petName").value.trim();
   if (!ownerName) {
     showToast("飼い主名を入力してください", "error");
     document.getElementById("ownerName").focus();
@@ -1519,22 +1630,9 @@ function closeReceipt() {
 function renderReceiptHtml(forPrint, invoiceNo) {
   const { subtotal, tax, total } = recalc();
   const owner = document.getElementById("ownerName").value.trim();
-  const pet = document.getElementById("petName").value.trim();
-  const animalType = document.getElementById("animalType").value;
-  const animalIn = animalInitial(animalType);
-  // ペット名＋動物種の表示組み立て
-  // ペット名あり＋動物種あり → 「ポチ ちゃん（D）」
-  // ペット名あり＋動物種なし → 「ポチ ちゃん」（従来通り）
-  // ペット名なし＋動物種あり → 「（D）」
-  // 両方なし → 空
-  let petDisp = "";
-  if (pet && animalIn) {
-    petDisp = `（${escapeHtml(pet)} ちゃん（${animalIn}））`;
-  } else if (pet) {
-    petDisp = `（${escapeHtml(pet)} ちゃん）`;
-  } else if (animalIn) {
-    petDisp = `（${animalIn}）`;
-  }
+  // ペット表示（複数対応）
+  // 例）「（ポチ ちゃん（D）、タマ ちゃん（C））」
+  const petDisp = buildPetDisplay(getPetRows());
   // 【第2弾】担当表示を getSelectedStaff() に差し替え（カンマ区切り→スペース区切りで表示）
   const staff = getSelectedStaff().replace(/,/g, ", ");
   const date = document.getElementById("visitDate").value;
@@ -1731,8 +1829,8 @@ async function sendToGAS() {
     // 【第2弾】担当者をgetSelectedStaff()に差し替え（カンマ区切り）
     staff: getSelectedStaff(),
     ownerName: document.getElementById("ownerName").value.trim(),
-    petName: document.getElementById("petName").value.trim(),
-    animalType: document.getElementById("animalType").value,
+    petName: getPetNames(),
+    animalType: getAnimalTypes(),
     items: state.cart.map(item => ({
       name: cartDispName(item),
       qty: item.qty,
@@ -1786,11 +1884,11 @@ function clearCart() {
   returnMode = false;
   updateReturnModeBtn();
   document.getElementById("ownerName").value = "";
-  document.getElementById("petName").value = "";
-  document.getElementById("animalType").value = "";
   document.getElementById("editPanel").classList.add("hidden");
   // 【第2弾】担当者プルダウンを1人にリセット
   resetStaffArea();
+  // ペット入力も1匹にリセット
+  initPetArea();
   renderCart();
   // 会計が終わったら日付は必ず今日に戻す。
   // 過去日で入力した会計（前日分の打ち直し等）の設定が次の会計に残らないようにする。

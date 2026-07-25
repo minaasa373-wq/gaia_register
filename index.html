@@ -163,6 +163,47 @@ button { cursor: pointer; border: none; background: none; }
   background: var(--warn);
   color: #fff;
 }
+
+/* ペット 複数追加UI（担当獣医と同じ操作感） */
+.pet-field-group {
+  align-items: flex-start;
+}
+.pet-area {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pet-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.pet-row input.pet-name {
+  width: 110px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 8px;
+  font-size: 13px;
+  background: var(--surface);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.pet-row input.pet-name:focus {
+  border-color: var(--green);
+}
+.pet-row select.pet-animal {
+  width: 78px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 5px 6px;
+  font-size: 13px;
+  background: var(--surface);
+  outline: none;
+  transition: border-color 0.15s;
+}
+.pet-row select.pet-animal:focus {
+  border-color: var(--green);
+}
 .header-status {
   margin-left: auto;
   font-size: 11px;
@@ -1365,16 +1406,12 @@ button { cursor: pointer; border: none; background: none; }
       <span class="field-label">飼い主</span>
       <input type="text" id="ownerName" placeholder="氏名">
     </div>
-    <div class="field-group">
+    <div class="field-group pet-field-group">
       <span class="field-label">ペット</span>
-      <input type="text" id="petName" placeholder="名前">
-      <select id="animalType" class="animal-type-select">
-        <option value="">種別</option>
-        <option value="犬">犬</option>
-        <option value="猫">猫</option>
-        <option value="ウサギ">ウサギ</option>
-        <option value="その他">その他</option>
-      </select>
+      <div class="pet-area" id="petArea">
+        <!-- JSが動的に「名前＋種別」の行を追加 -->
+      </div>
+      <button class="btn-add-staff" id="addPetBtn" onclick="addPetRow()" title="ペットを追加（最大6匹）">＋</button>
     </div>
     <div class="field-group">
       <span class="field-label">日付</span>

@@ -82,8 +82,13 @@ function renderResults(data) {
   }
 
   const cards = records.map((r, i) => {
-    const animalBadge = r.animalType ? `【${r.animalType}】` : "";
-    const names = [r.owner, r.pet].filter(Boolean).join(" / ") || "（名前未入力）";
+    // 動物種バッジ：複数なら「【犬・猫】」のようにまとめる（重複は1つに）
+    const types = String(r.animalType || "").split(",").map(s => s.trim()).filter(Boolean);
+    const uniqTypes = types.filter((t, idx) => types.indexOf(t) === idx);
+    const animalBadge = uniqTypes.length ? `【${uniqTypes.join("・")}】` : "";
+    // ペット名：カンマ区切りを「・」でつないで読みやすく
+    const petDisp = String(r.pet || "").split(",").map(s => s.trim()).filter(Boolean).join("・");
+    const names = [r.owner, petDisp].filter(Boolean).join(" / ") || "（名前未入力）";
     return `
     <div class="record-card" id="card-${i}">
       <div class="record-head" onclick="toggleCard(${i})">
@@ -126,6 +131,38 @@ function animalInitial(type) {
   return map[type] || "";
 }
 
+// 記録上のペット名・動物種はカンマ区切りで複数入りうる（「ポチ,タマ」「犬,猫」）。
+// 位置を対応させて [{name, animal}, ...] に組み直す。
+function parsePetPairs(petStr, animalStr) {
+  const names = String(petStr || "").split(",").map(s => s.trim());
+  const animals = String(animalStr || "").split(",").map(s => s.trim());
+  const len = Math.max(names.length, animals.length);
+  const pairs = [];
+  for (let i = 0; i < len; i++) {
+    const name = names[i] || "";
+    const animal = animals[i] || "";
+    if (name || animal) pairs.push({ name: name, animal: animal });
+  }
+  return pairs;
+}
+
+// 明細書用のペット表示（レジ側と同じルール）
+// 例）「（ポチ ちゃん（D）、タマ ちゃん（C））」
+function buildPetDisplay(pairs) {
+  const parts = [];
+  (pairs || []).forEach(p => {
+    const initial = animalInitial(p.animal);
+    if (p.name && initial) {
+      parts.push(`${escapeHtml(p.name)} ちゃん（${initial}）`);
+    } else if (p.name) {
+      parts.push(`${escapeHtml(p.name)} ちゃん`);
+    } else if (initial) {
+      parts.push(`（${initial}）`);
+    }
+  });
+  return parts.length ? `（${parts.join("、")}）` : "";
+}
+
 // 日付をYYYY年M月D日表示に（yyyy-MM-dd想定・失敗時はそのまま返す）
 function formatDateJp(s) {
   const m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
@@ -137,16 +174,8 @@ function reprintRecord(i) {
   const r = lastRecords[i];
   if (!r) return;
 
-  // ペット名＋動物種の表示（レジ側と同じルール）
-  const animalIn = animalInitial(r.animalType);
-  let petDisp = "";
-  if (r.pet && animalIn) {
-    petDisp = `（${escapeHtml(r.pet)} ちゃん（${animalIn}））`;
-  } else if (r.pet) {
-    petDisp = `（${escapeHtml(r.pet)} ちゃん）`;
-  } else if (animalIn) {
-    petDisp = `（${animalIn}）`;
-  }
+  // ペット名＋動物種の表示（レジ側と同じルール・複数対応）
+  const petDisp = buildPetDisplay(parsePetPairs(r.pet, r.animalType));
 
   // 明細テキスト（改行区切り）を行ごとに描画。
   // 各行は「品名 数量 × ¥単価 = ¥金額」形式なので、末尾の「 = ¥金額」だけ右寄せに分離する。
