@@ -692,7 +692,8 @@ function addToCart(product, qty, staffRole, extra) {
   staffRole = staffRole || null;
   extra = extra || null;
   // 整数固定なら数量を整数に丸める
-  if (isIntegerOnly(product)) {
+  // ただし民宿行（頭数×泊数から算出）は対象外。1頭×1.5泊＝1.5 を丸めてはいけない
+  if (isIntegerOnly(product) && !(extra && extra.stayHeads)) {
     qty = Math.max(1, Math.round(qty));
   }
   // 担当者種別が異なる場合は別行扱い（同じ商品でも獣医分/看護師分を分ける）
@@ -852,10 +853,13 @@ function updateDoseQtyLabel() {
   const qtyEl = document.getElementById("doseQty");
   qtyEl.step = intOnly ? "1" : "0.25";
 }
-// 民宿の頭数・泊数を読み取る（それぞれ1以上の整数）
+// 民宿の頭数・泊数を読み取る
+// 頭数：1頭単位（整数）。端数は切り捨てる。
+// 泊数：0.5泊単位を想定するが、丸めは一切しない（入力どおりの値を使う）。
+//       以前は Math.round していたため、1.5泊が2泊、1.4泊が1泊になる不具合があった。
 function getStayInputs() {
-  const heads = Math.max(0, Math.round(parseFloat(document.getElementById("stayHeads").value) || 0));
-  const nights = Math.max(0, Math.round(parseFloat(document.getElementById("stayNights").value) || 0));
+  const heads = Math.max(0, Math.floor(parseFloat(document.getElementById("stayHeads").value) || 0));
+  const nights = Math.max(0, parseFloat(document.getElementById("stayNights").value) || 0);
   return { heads, nights };
 }
 function updateDoseTotal() {
@@ -1534,7 +1538,9 @@ function applyEdit() {
   if (!item) return;
   let qty = parseFloat(document.getElementById("editQty").value) || 0;
   const priceInput = parseFloat(document.getElementById("editPrice").value) || 0;
-  if ((item.qtyType || "") === "整数固定") {
+  // 民宿行の数量は「頭数×泊数」から算出した値なので、整数固定の丸めは適用しない
+  // （1頭×1.5泊＝1.5 が 2 に丸められ、頭数×泊数の表示が壊れるのを防ぐ）
+  if ((item.qtyType || "") === "整数固定" && !item.stayHeads) {
     qty = Math.max(0, Math.round(qty));
     document.getElementById("editQty").value = qty;
   }

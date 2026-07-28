@@ -1523,8 +1523,8 @@ button { cursor: pointer; border: none; background: none; }
             </div>
             <span class="stay-times">×</span>
             <div class="stay-input-col">
-              <span class="field-label">泊数</span>
-              <input type="number" id="stayNights" class="dose-qty-input" step="1" min="1" value="1" inputmode="numeric" oninput="updateDoseTotal()">
+              <span class="field-label">泊数（0.5泊OK）</span>
+              <input type="number" id="stayNights" class="dose-qty-input" step="0.5" min="0.5" value="1" inputmode="decimal" oninput="updateDoseTotal()">
             </div>
           </div>
         </div>
