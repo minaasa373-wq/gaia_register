@@ -174,6 +174,11 @@ function searchRecords(params) {
       subtotal:   Number(r[C["小計"]]) || 0,
       tax:        Number(r[C["消費税"]]) || 0,
       total:      Number(r[C["合計"]]) || 0,
+      // 明細書「控え」の再印刷で技術料を表示するために返す（給与計算のダブルチェック用）
+      // REC_COLS の必須列なので buildColMap で存在は保証されている
+      gigiNonVaccine: Number(r[C["通常技術料"]])     || 0,
+      gigiVaccine:    Number(r[C["ワクチン技術料"]]) || 0,
+      staffCount:     Number(r[C["担当人数"]])       || 1,  // 未記録の古い行は1扱い
       animalType: animalType
     });
   }

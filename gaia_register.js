@@ -775,6 +775,17 @@ function calcNonVaccineGigi() {
   return calcTotalGigi() - calcVaccineGigi();
 }
 
+// 明細書「控え」専用の技術料表示行（給与計算時のダブルチェック用）
+// 販売記録の L列（通常技術料）／M列（ワクチン技術料）／N列（担当人数）と
+// そのまま突合できるように、この3つを同じ並びで印字する。
+// ※ お客様用（1枚目）には絶対に出さない。控え（2枚目）専用。
+function buildGigiPrintLine() {
+  const nonVac = calcNonVaccineGigi();
+  const vac = calcVaccineGigi();
+  const cnt = getStaffCount();
+  return `<div class="print-gigi">技術料　通常 ¥${nonVac.toLocaleString()} ／ ワクチン ¥${vac.toLocaleString()} ／ 担当 ${cnt}名</div>`;
+}
+
 // ワクチン種類別の件数を集計
 // 戻り値：[{ name: "犬5種ワクチン", count: 4 }, ...]（ワクチン品目があるものだけ）
 // 品名はマスタの品名（item.name）を使う。用量（dose）は含めない。
@@ -1633,7 +1644,9 @@ function closeReceipt() {
 }
 
 // invoiceNo: サーバ採番された確定番号。null のときは「印刷時に採番」と表示（プレビュー用）
-function renderReceiptHtml(forPrint, invoiceNo) {
+// isCopy: true のとき「控え」（2枚目）として描画し、技術料の行を追加する。
+//         お客様用（1枚目）は false のまま呼ぶこと。
+function renderReceiptHtml(forPrint, invoiceNo, isCopy) {
   const { subtotal, tax, total } = recalc();
   const owner = document.getElementById("ownerName").value.trim();
   // ペット表示（複数対応）
@@ -1678,6 +1691,7 @@ function renderReceiptHtml(forPrint, invoiceNo) {
       <div class="print-totals-row"><span>小計</span><span>¥${subtotal.toLocaleString()}</span></div>
       <div class="print-totals-row"><span>消費税(10%)</span><span>¥${tax.toLocaleString()}</span></div>
       <div class="print-totals-row grand"><span>合　計</span><span>¥${total.toLocaleString()}</span></div>
+      ${isCopy ? buildGigiPrintLine() : ""}
       <div class="print-thanks">
         お大事にしてください。
       </div>
@@ -1790,8 +1804,8 @@ async function doPrint() {
     // ---- 2. 採番された番号で明細書（A5×2枚）を組み立て ----
     const invoiceNo = result.invoiceNo;
     state.lastInvoiceNo = invoiceNo;
-    const html1 = renderReceiptHtml(true, invoiceNo);
-    const html2 = renderReceiptHtml(true, invoiceNo);
+    const html1 = renderReceiptHtml(true, invoiceNo, false);  // 1枚目：お客様用（技術料なし）
+    const html2 = renderReceiptHtml(true, invoiceNo, true);   // 2枚目：控え（技術料あり）
     document.getElementById("printArea").innerHTML = `
       <div class="print-page">${html1}</div>
       <div class="print-page">

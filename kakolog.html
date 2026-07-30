@@ -330,11 +330,14 @@ body {
   }
   .print-area { display: block !important; }
   .print-page {
-    page-break-after: avoid;
+    /* A5×2枚（お客様用／控え）を刷るため、最後の1枚以外は必ず改ページする。
+       最後にも always が効くと白紙が1枚余計に出るので last-child で解除する。 */
+    page-break-after: always;
     page-break-inside: avoid;
     height: auto;      /* 固定高だと余白が次ページに溢れることがある */
     min-height: 0;
   }
+  .print-page:last-child { page-break-after: auto; }
   @page { size: A5 portrait; margin: 0; }
 }
 .print-page {
@@ -390,6 +393,25 @@ body {
   margin-top: 6px;
   padding-top: 4px;
   border-top: 1.5px solid #000;
+}
+.print-watermark {
+  position: absolute;
+  top: 12mm;
+  right: 10mm;
+  font-family: 'Noto Serif JP', serif;
+  font-size: 16px;
+  font-weight: 700;
+  border: 2px solid #333;
+  color: #333;
+  padding: 3px 10px;
+  letter-spacing: 0.3em;
+}
+.print-gigi {
+  margin-top: 6px;
+  text-align: right;
+  font-size: 9px;
+  color: #555;
+  letter-spacing: 0.02em;
 }
 .print-thanks {
   margin-top: 16px;

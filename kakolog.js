@@ -194,8 +194,16 @@ function reprintRecord(i) {
 
   const staffDisp = String(r.staff || "").replace(/,/g, ", ");
 
-  document.getElementById("reprintArea").innerHTML = `
+  // 明細書の本体を組み立てる。
+  // isCopy=true のときだけ「控え」ウォーターマークと技術料の行を付ける。
+  // ※ 技術料はお客様用（1枚目）には絶対に出さない。
+  function buildPage(isCopy) {
+    const gigiLine = isCopy
+      ? `<div class="print-gigi">技術料　通常 ¥${Number(r.gigiNonVaccine || 0).toLocaleString()} ／ ワクチン ¥${Number(r.gigiVaccine || 0).toLocaleString()} ／ 担当 ${Number(r.staffCount || 1)}名</div>`
+      : "";
+    return `
     <div class="print-page">
+      ${isCopy ? `<div class="print-watermark">控　え</div>` : ""}
       <div class="print-title">明　細　書</div>
       <div class="print-meta">
         <span>発行日：${escapeHtml(formatDateJp(r.visitDate))}</span>
@@ -212,6 +220,7 @@ function reprintRecord(i) {
       <div class="print-totals-row"><span>小計</span><span>¥${Number(r.subtotal).toLocaleString()}</span></div>
       <div class="print-totals-row"><span>消費税(10%)</span><span>¥${Number(r.tax).toLocaleString()}</span></div>
       <div class="print-totals-row grand"><span>合　計</span><span>¥${Number(r.total).toLocaleString()}</span></div>
+      ${gigiLine}
       <div class="print-thanks">
         お大事にしてください。
       </div>
@@ -220,8 +229,11 @@ function reprintRecord(i) {
         <div class="print-hospital-name">ガイア動物病院</div>
         <div class="print-hospital-info">〒069-1182 千歳市協和1914<br>Tel：0123-21-2552<br>登録番号：T9430002048507</div>
       </div>
-    </div>
-  `;
+    </div>`;
+  }
+
+  // レジ側と同じくA5×2枚（1枚目：お客様用／2枚目：控え）
+  document.getElementById("reprintArea").innerHTML = buildPage(false) + buildPage(true);
   window.print();
 }
 
