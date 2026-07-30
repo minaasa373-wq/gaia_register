@@ -23,6 +23,37 @@ const SHEET_DRUGS       = "薬品・物品マスタ";      // 16列（案3共通
 const SHEET_STAFF       = "担当者";
 const SHEET_RECORDS     = "販売記録";
 const SHEET_GIGI_LEDGER = "技術料台帳";          // 【第2弾】新設
+const SHEET_CARD_LEDGER = "カード決済台帳";      // カード・電子決済分の控え
+
+// ===== 販売記録の列定義 =====
+// 列は「名前」で参照する（添字直書きをやめた）。
+// これにより、スプレッドシート上で列を入れ替えても・途中に列を挿しても
+// コードを直さずに動く。逆に、ヘッダー名を変えると読めなくなるので注意。
+// ※ 下の並びは「新規にシートを作るときの順序」。既存シートは実際のヘッダー順に従う。
+const REC_COLS = [
+  "記録日時", "会計日", "伝票番号", "担当者", "飼い主名", "ペット名",
+  "通常技術料", "ワクチン技術料", "確認済み", "カード決済",
+  "明細", "技術料明細", "件数", "小計", "消費税", "合計",
+  "担当人数", "動物種"
+];
+// 手動チェック用の列（Googleのチェックボックスを入れる）
+const REC_CHECK_COLS = ["確認済み", "カード決済"];
+// 幅を広げる列
+const WIDE_COLS = ["明細", "技術料明細"];
+
+// 技術料台帳の列（販売記録と同じく名前で参照する）
+const GIGI_COLS = ["記録日時", "会計日", "伝票番号", "担当獣医", "通常技術料", "ワクチン技術料", "担当人数"];
+
+// 整合チェックで塗る色
+const FIX_COLOR     = "#f8bbd0";  // ピンク：販売記録の値に修正した
+const RESTORE_COLOR = "#fff2b2";  // 黄　　：台帳に無かった行を復元した
+const ORPHAN_COLOR  = "#dcdcdc";  // グレー：販売記録に対応が無い（自動修正しない）
+
+// カード決済台帳の列
+const CARD_LEDGER_COLS = [
+  "記録日時", "会計日", "伝票番号", "担当者", "飼い主名", "ペット名",
+  "明細", "合計", "通常技術料", "ワクチン技術料", "担当人数", "技術料明細", "精算済"
+];
 const SHEET_VACCINE_LEDGER = "ワクチン台帳";      // 案3b：ワクチン種類別件数
 
 const GROUP_CARE = "診療";
@@ -98,10 +129,11 @@ function searchRecords(params) {
     return { result: "success", records: [], truncated: false };
   }
 
-  // A〜K列（記録日時〜合計）＋P列（動物種）を取得。技術料関連（L〜O）は読み込まない
-  // ただしgetRangeは連続範囲なのでA〜Pの16列を取得し、L〜Oは使わない
+  // 列は名前で引く（並べ替え・列追加に強い）
+  const cm = buildColMap(sheet, REC_COLS);
+  const C = cm.idx;
   const lastRow = sheet.getLastRow();
-  const rows = sheet.getRange(2, 1, lastRow - 1, 16).getValues();
+  const rows = sheet.getRange(2, 1, lastRow - 1, cm.count).getValues();
 
   // 会計日はyyyy-MM-dd文字列で比較（B列はDate型か文字列の可能性があるため正規化）
   const tz = Session.getScriptTimeZone();
@@ -112,11 +144,11 @@ function searchRecords(params) {
 
   const hits = [];
   for (const r of rows) {
-    const visitDate  = normDate(r[1]);      // B: 会計日
-    const staffName  = String(r[3] || "");  // D: 担当者
-    const ownerName  = String(r[4] || "");  // E: 飼い主名
-    const petName    = String(r[5] || "");  // F: ペット名
-    const animalType = String(r[15] || ""); // P: 動物種
+    const visitDate  = normDate(r[C["会計日"]]);
+    const staffName  = String(r[C["担当者"]]   || "");
+    const ownerName  = String(r[C["飼い主名"]] || "");
+    const petName    = String(r[C["ペット名"]] || "");
+    const animalType = String(r[C["動物種"]]   || "");
 
     if (owner  && ownerName.indexOf(owner) === -1) continue;
     if (pet    && petName.indexOf(pet)     === -1) continue;
@@ -131,18 +163,18 @@ function searchRecords(params) {
     }
 
     hits.push({
-      recordedAt: normDate(r[0]),          // A: 記録日時（日付部分）
-      visitDate:  visitDate,               // B: 会計日
-      invoiceNo:  String(r[2] || ""),      // C: 伝票番号
-      staff:      String(r[3] || ""),      // D: 担当者
-      owner:      ownerName,               // E: 飼い主名
-      pet:        petName,                 // F: ペット名
-      items:      String(r[6] || ""),      // G: 明細（改行区切りテキスト）
-      count:      Number(r[7]) || 0,       // H: 件数
-      subtotal:   Number(r[8]) || 0,       // I: 小計
-      tax:        Number(r[9]) || 0,       // J: 消費税
-      total:      Number(r[10]) || 0,      // K: 合計
-      animalType: animalType               // P: 動物種
+      recordedAt: normDate(r[C["記録日時"]]),
+      visitDate:  visitDate,
+      invoiceNo:  String(r[C["伝票番号"]] || ""),
+      staff:      staffName,
+      owner:      ownerName,
+      pet:        petName,
+      items:      String(r[C["明細"]] || ""),   // 改行区切りテキスト
+      count:      Number(r[C["件数"]]) || 0,
+      subtotal:   Number(r[C["小計"]]) || 0,
+      tax:        Number(r[C["消費税"]]) || 0,
+      total:      Number(r[C["合計"]]) || 0,
+      animalType: animalType
     });
   }
 
@@ -161,6 +193,65 @@ function searchRecords(params) {
   };
 }
 
+// ===== 列名 → 位置 の対応表を作る =====
+// 1行目のヘッダーを読んで { "会計日": 1, ... }（0始まり）を返す。
+// required を渡すと、欠けている列があった時点で分かりやすいエラーを投げる。
+function buildColMap(sheet, required) {
+  const lastCol = sheet.getLastColumn();
+  if (lastCol < 1) {
+    throw new Error("「" + sheet.getName() + "」シートにヘッダー行がありません。");
+  }
+  const header = sheet.getRange(1, 1, 1, lastCol).getValues()[0];
+  const idx = {};
+  header.forEach(function (h, i) {
+    const key = String(h || "").trim();
+    if (key && !(key in idx)) idx[key] = i;  // 同名が複数あれば左側を優先
+  });
+  if (required && required.length) {
+    const missing = required.filter(function (n) { return !(n in idx); });
+    if (missing.length) {
+      throw new Error(
+        "「" + sheet.getName() + "」シートに次の列が見つかりません：" + missing.join("、") + "\n" +
+        "1行目のヘッダー名が正確か確認してください（全角・半角、スペースの有無も一致が必要です）。"
+      );
+    }
+  }
+  return { idx: idx, count: lastCol };
+}
+
+// ===== チェック判定 =====
+// Googleのチェックボックス（真偽値）でも、手打ちの ✅ や 〇 でもONとみなす。
+// 「×」「-」「FALSE」「0」や空欄はOFF。
+function isChecked(v) {
+  if (v === true) return true;
+  if (v === false || v === null || v === undefined) return false;
+  const s = String(v).trim().toLowerCase();
+  if (!s) return false;
+  const off = ["false", "0", "-", "×", "x", "未", "no"];
+  if (off.indexOf(s) !== -1) return false;
+  const on = ["true", "1", "✅", "✔", "✓", "レ", "○", "〇", "◯", "y", "yes", "済", "v", "*"];
+  return on.indexOf(s) !== -1;
+}
+
+// ===== 販売記録シートを取得（無ければ作成） =====
+function ensureRecordSheet(ss) {
+  let sheet = ss.getSheetByName(SHEET_RECORDS);
+  if (!sheet) {
+    sheet = ss.insertSheet(SHEET_RECORDS);
+    sheet.appendRow(REC_COLS);
+    const header = sheet.getRange(1, 1, 1, REC_COLS.length);
+    header.setBackground("#1a5c3a");
+    header.setFontColor("#ffffff");
+    header.setFontWeight("bold");
+    sheet.setFrozenRows(1);
+    WIDE_COLS.forEach(function (name) {
+      const i = REC_COLS.indexOf(name);
+      if (i >= 0) sheet.setColumnWidth(i + 1, 400);
+    });
+  }
+  return sheet;
+}
+
 // ===== 販売記録の保存（POST） =====// 【A-1：サーバ採番版】＋【第2弾：14列化＋技術料台帳】
 //   LockService で「採番→記録」を直列化し、4台同時でも伝票番号が衝突しない。
 //   クライアントは伝票番号を送らない。GASが採番し invoiceNo を返す。
@@ -174,24 +265,9 @@ function doPost(e) {
     const ss = SpreadsheetApp.getActiveSpreadsheet();
 
     // ---- 販売記録シート ----
-    let sheet = ss.getSheetByName(SHEET_RECORDS);
-
-    // シートがなければ作成（16列版）
-    if (!sheet) {
-      sheet = ss.insertSheet(SHEET_RECORDS);
-      sheet.appendRow([
-        "記録日時", "会計日", "伝票番号", "担当者", "飼い主名", "ペット名",
-        "明細", "件数", "小計", "消費税", "合計",
-        "通常技術料", "ワクチン技術料", "担当人数", "技術料明細", "動物種"
-      ]);
-      const header = sheet.getRange(1, 1, 1, 16);
-      header.setBackground("#1a5c3a");
-      header.setFontColor("#ffffff");
-      header.setFontWeight("bold");
-      sheet.setFrozenRows(1);
-      sheet.setColumnWidth(7, 400);   // 明細列
-      sheet.setColumnWidth(15, 400);  // 技術料明細列
-    }
+    const sheet = ensureRecordSheet(ss);
+    const cm = buildColMap(sheet, REC_COLS);
+    const C = cm.idx;
 
     // ---- 伝票番号を採番（ロック保持中に実行）----
     const invoiceNo = nextInvoiceNo();
@@ -215,25 +291,33 @@ function doPost(e) {
     const staffCount     = Number(data.staffCount)      || 1;
     const gigiSnap       = data.gigiSnapshot || "";
 
-    // 販売記録16列（A〜P）
-    sheet.appendRow([
-      now,                          // A: 記録日時
-      visitDate,                    // B: 会計日
-      invoiceNo,                    // C: 伝票番号（サーバ採番）
-      staffStr,                     // D: 担当者（カンマ区切り）
-      data.ownerName || "",         // E: 飼い主名
-      data.petName || "",           // F: ペット名
-      itemsText,                    // G: 明細
-      (data.items || []).length,    // H: 件数
-      data.subtotal || 0,           // I: 小計
-      data.tax || 0,                // J: 消費税
-      data.total || 0,              // K: 合計
-      gigiNonVaccine,               // L: 通常技術料      ← 案B
-      gigiVaccine,                  // M: ワクチン技術料  ← 案B
-      staffCount,                   // N: 担当人数
-      gigiSnap,                     // O: 技術料明細
-      data.animalType || ""         // P: 動物種（犬/猫/ウサギ/その他）
-    ]);
+    // 販売記録へ1行追加（列は名前で位置を引くので、並べ替えても壊れない）
+    const row = new Array(cm.count).fill("");
+    row[C["記録日時"]]        = now;
+    row[C["会計日"]]          = visitDate;
+    row[C["伝票番号"]]        = invoiceNo;          // サーバ採番
+    row[C["担当者"]]          = staffStr;           // カンマ区切り
+    row[C["飼い主名"]]        = data.ownerName || "";
+    row[C["ペット名"]]        = data.petName || "";
+    row[C["通常技術料"]]      = gigiNonVaccine;
+    row[C["ワクチン技術料"]]  = gigiVaccine;
+    row[C["確認済み"]]        = false;              // 手動チェック用（未確認で開始）
+    row[C["カード決済"]]      = false;              // 手動チェック用（未チェックで開始）
+    row[C["明細"]]            = itemsText;
+    row[C["技術料明細"]]      = gigiSnap;
+    row[C["件数"]]            = (data.items || []).length;
+    row[C["小計"]]            = data.subtotal || 0;
+    row[C["消費税"]]          = data.tax || 0;
+    row[C["合計"]]            = data.total || 0;
+    row[C["担当人数"]]        = staffCount;
+    row[C["動物種"]]          = data.animalType || "";
+    sheet.appendRow(row);
+
+    // 追加した行の手動チェック列をチェックボックスにする
+    const newRow = sheet.getLastRow();
+    REC_CHECK_COLS.forEach(function (name) {
+      if (name in C) sheet.getRange(newRow, C[name] + 1).insertCheckboxes();
+    });
 
     // ---- 技術料台帳への書き込み ----
     writeGigiLedger(ss, now, visitDate, invoiceNo, staffStr, gigiNonVaccine, gigiVaccine, staffCount);
@@ -257,20 +341,31 @@ function doPost(e) {
 function writeGigiLedger(ss, now, visitDate, invoiceNo, staffStr, gigiNonVaccine, gigiVaccine, staffCount) {
   let ledger = ss.getSheetByName(SHEET_GIGI_LEDGER);
 
-  // シートがなければ作成（7列版）
+  // シートがなければ作成
   if (!ledger) {
     ledger = ss.insertSheet(SHEET_GIGI_LEDGER);
-    ledger.appendRow(["記録日時", "会計日", "伝票番号", "担当獣医", "通常技術料", "ワクチン技術料", "担当人数"]);
-    const header = ledger.getRange(1, 1, 1, 7);
+    ledger.appendRow(GIGI_COLS);
+    const header = ledger.getRange(1, 1, 1, GIGI_COLS.length);
     header.setBackground("#1a5c3a");
     header.setFontColor("#ffffff");
     header.setFontWeight("bold");
     ledger.setFrozenRows(1);
-    ledger.setColumnWidth(4, 120);
+    ledger.setColumnWidth(GIGI_COLS.indexOf("担当獣医") + 1, 120);
   }
 
   // 常に1行で記録（複数担当でも分割しない）
-  ledger.appendRow([now, visitDate, invoiceNo, staffStr, gigiNonVaccine, gigiVaccine, staffCount]);
+  // 列は名前で位置を引くので、台帳の列を並べ替えても壊れない
+  const lcm = buildColMap(ledger, GIGI_COLS);
+  const LC = lcm.idx;
+  const row = new Array(lcm.count).fill("");
+  row[LC["記録日時"]]       = now;
+  row[LC["会計日"]]         = visitDate;
+  row[LC["伝票番号"]]       = invoiceNo;
+  row[LC["担当獣医"]]       = staffStr;
+  row[LC["通常技術料"]]     = gigiNonVaccine;
+  row[LC["ワクチン技術料"]] = gigiVaccine;
+  row[LC["担当人数"]]       = staffCount;
+  ledger.appendRow(row);
 }
 
 // ===== ワクチン台帳への書き込み（案3b）=====
@@ -438,21 +533,8 @@ function setupSheets() {
     sSheet.appendRow([6, "要田正治", 30]);
   }
 
-  // 販売記録（16列版）
-  let rSheet = ss.getSheetByName(SHEET_RECORDS);
-  if (!rSheet) {
-    rSheet = ss.insertSheet(SHEET_RECORDS);
-    rSheet.appendRow([
-      "記録日時", "会計日", "伝票番号", "担当者", "飼い主名", "ペット名",
-      "明細", "件数", "小計", "消費税", "合計",
-      "通常技術料", "ワクチン技術料", "担当人数", "技術料明細", "動物種"
-    ]);
-    const h = rSheet.getRange(1, 1, 1, 16);
-    h.setBackground("#1a5c3a").setFontColor("#fff").setFontWeight("bold");
-    rSheet.setFrozenRows(1);
-    rSheet.setColumnWidth(7, 400);   // 明細列
-    rSheet.setColumnWidth(15, 400);  // 技術料明細列
-  }
+  // 販売記録（列定義は REC_COLS を正とする）
+  ensureRecordSheet(ss);
 
   // 技術料台帳（7列版）
   let gSheet = ss.getSheetByName(SHEET_GIGI_LEDGER);
@@ -485,6 +567,282 @@ function setupSheets() {
     "・技術料台帳（7列版）\n" +
     "・ワクチン台帳（5列版）"
   );
+}
+
+// ===== スプレッドシートのメニュー =====
+// ファイルを開いたときに「ガイア」メニューを追加する。
+function onOpen() {
+  SpreadsheetApp.getUi()
+    .createMenu("🏥 ガイア")
+    .addItem("技術料台帳の整合チェック", "checkGigiLedger")
+    .addSeparator()
+    .addItem("月次集計を実行", "promptMonthlyReport")
+    .addSeparator()
+    .addItem("初期セットアップ", "setupSheets")
+    .addToUi();
+}
+
+// ===== 伝票番号の正規化 =====
+// セルの書式次第で "000101"（文字列）にも 101（数値）にもなりうるため、
+// 先頭ゼロを落とした形に揃えてから突き合わせる。
+function normInvoice(v) {
+  const s = String(v == null ? "" : v).trim();
+  if (!s) return "";
+  return /^\d+$/.test(s) ? s.replace(/^0+/, "") || "0" : s;
+}
+
+// ===== 技術料台帳の整合チェック =====
+// 販売記録を正として、技術料台帳の技術料（通常・ワクチン）を照合する。
+//   1. 値が違う      → 販売記録の値に修正し、ピンクで塗ってメモに修正前の値を残す
+//   2. 台帳に行が無い → 販売記録から復元して追加し、黄色で塗る
+//   3. 販売記録に無い → グレーで印を付けるだけ（削除はしない。人が判断する）
+//   4. 伝票番号の重複 → 報告のみ（自動修正はしない）
+function checkGigiLedger() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const rec = ss.getSheetByName(SHEET_RECORDS);
+  if (!rec || rec.getLastRow() < 2) {
+    ui.alert("販売記録にデータがありません。");
+    return;
+  }
+  const ledger = ss.getSheetByName(SHEET_GIGI_LEDGER);
+  if (!ledger) {
+    ui.alert("技術料台帳が見つかりません。");
+    return;
+  }
+
+  let rcm, lcm;
+  try {
+    rcm = buildColMap(rec, ["伝票番号", "会計日", "記録日時", "担当者", "通常技術料", "ワクチン技術料", "担当人数"]);
+    lcm = buildColMap(ledger, GIGI_COLS);
+  } catch (e) {
+    ui.alert("列の確認でエラーが発生しました：\n" + e.message);
+    return;
+  }
+  const RC = rcm.idx, LC = lcm.idx;
+
+  // ---- 販売記録を伝票番号で索引化 ----
+  const recRows = rec.getRange(2, 1, rec.getLastRow() - 1, rcm.count).getValues();
+  const recMap = {};
+  const recDup = [];
+  recRows.forEach(function (r) {
+    const no = normInvoice(r[RC["伝票番号"]]);
+    if (!no) return;
+    if (recMap[no]) { recDup.push(no); return; }
+    recMap[no] = {
+      recordedAt: r[RC["記録日時"]],
+      visitDate:  r[RC["会計日"]],
+      invoiceRaw: r[RC["伝票番号"]],
+      staff:      r[RC["担当者"]],
+      gigiNon:    Number(r[RC["通常技術料"]])     || 0,
+      gigiVac:    Number(r[RC["ワクチン技術料"]]) || 0,
+      staffCount: Number(r[RC["担当人数"]])       || 1
+    };
+  });
+
+  // ---- 技術料台帳を走査して修正計画を立てる ----
+  const hasLedgerRows = ledger.getLastRow() >= 2;
+  const ledRows = hasLedgerRows
+    ? ledger.getRange(2, 1, ledger.getLastRow() - 1, lcm.count).getValues()
+    : [];
+
+  const fixes = [];    // {row, col, before, after, label}
+  const orphans = [];  // 行番号
+  const ledDup = [];
+  const seen = {};
+
+  ledRows.forEach(function (r, i) {
+    const rowNo = i + 2;
+    const no = normInvoice(r[LC["伝票番号"]]);
+    if (!no) return;
+    if (seen[no]) { ledDup.push(no); return; }
+    seen[no] = true;
+
+    const src = recMap[no];
+    if (!src) { orphans.push(rowNo); return; }
+
+    const pairs = [
+      { name: "通常技術料",     cur: Number(r[LC["通常技術料"]])     || 0, exp: src.gigiNon },
+      { name: "ワクチン技術料", cur: Number(r[LC["ワクチン技術料"]]) || 0, exp: src.gigiVac }
+    ];
+    pairs.forEach(function (p) {
+      if (p.cur !== p.exp) {
+        fixes.push({ row: rowNo, col: LC[p.name] + 1, before: p.cur, after: p.exp, label: p.name });
+      }
+    });
+  });
+
+  // ---- 台帳に存在しない伝票（＝技術料が丸ごと欠落）----
+  const missing = [];
+  Object.keys(recMap).forEach(function (no) {
+    if (!seen[no]) missing.push(no);
+  });
+  // 伝票番号順に並べる
+  missing.sort(function (a, b) { return Number(a) - Number(b) || (a < b ? -1 : 1); });
+
+  // ---- 何もなければ終了 ----
+  if (fixes.length === 0 && missing.length === 0 && orphans.length === 0 &&
+      recDup.length === 0 && ledDup.length === 0) {
+    ui.alert("整合チェック完了\n\n技術料台帳は販売記録と一致しています。修正はありません。");
+    return;
+  }
+
+  // ---- 確認ダイアログ ----
+  let msg = "次の内容で技術料台帳を修正します。\n\n";
+  msg += "・技術料の修正：" + fixes.length + "件\n";
+  msg += "・欠落行の復元：" + missing.length + "件\n";
+  msg += "・販売記録に無い行：" + orphans.length + "件（印を付けるだけ）\n";
+  if (recDup.length) msg += "・販売記録の伝票番号重複：" + recDup.length + "件（修正しません）\n";
+  if (ledDup.length) msg += "・技術料台帳の伝票番号重複：" + ledDup.length + "件（修正しません）\n";
+  if (fixes.length) {
+    msg += "\n【修正内容（先頭10件）】\n";
+    fixes.slice(0, 10).forEach(function (f) {
+      msg += "  " + f.row + "行目 " + f.label + "：" + f.before + " → " + f.after + "\n";
+    });
+    if (fixes.length > 10) msg += "  ほか " + (fixes.length - 10) + "件\n";
+  }
+  msg += "\n実行しますか？";
+
+  if (ui.alert("整合チェック", msg, ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
+
+  // ---- 修正を適用 ----
+  const stamp = Utilities.formatDate(new Date(), Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+
+  fixes.forEach(function (f) {
+    const cell = ledger.getRange(f.row, f.col);
+    cell.setValue(f.after);
+    cell.setBackground(FIX_COLOR);
+    const prev = cell.getNote();
+    cell.setNote((prev ? prev + "\n" : "") +
+      "修正前: " + f.before + " → " + f.after + "（" + stamp + " 整合チェック）");
+  });
+
+  orphans.forEach(function (rowNo) {
+    ledger.getRange(rowNo, 1, 1, lcm.count).setBackground(ORPHAN_COLOR);
+    const cell = ledger.getRange(rowNo, LC["伝票番号"] + 1);
+    const prev = cell.getNote();
+    cell.setNote((prev ? prev + "\n" : "") +
+      "販売記録に対応する伝票がありません（" + stamp + " 整合チェック）");
+  });
+
+  if (missing.length) {
+    const rows = missing.map(function (no) {
+      const s = recMap[no];
+      const out = new Array(lcm.count).fill("");
+      out[LC["記録日時"]]       = s.recordedAt;
+      out[LC["会計日"]]         = s.visitDate;
+      out[LC["伝票番号"]]       = s.invoiceRaw;
+      out[LC["担当獣医"]]       = s.staff;
+      out[LC["通常技術料"]]     = s.gigiNon;
+      out[LC["ワクチン技術料"]] = s.gigiVac;
+      out[LC["担当人数"]]       = s.staffCount;
+      return out;
+    });
+    const start = ledger.getLastRow() + 1;
+    const range = ledger.getRange(start, 1, rows.length, lcm.count);
+    range.setValues(rows);
+    range.setBackground(RESTORE_COLOR);
+    ledger.getRange(start, LC["伝票番号"] + 1, rows.length, 1)
+      .setNote("販売記録から復元（" + stamp + " 整合チェック）");
+  }
+
+  // ---- 結果報告 ----
+  let done = "整合チェックが完了しました。\n\n";
+  done += "・技術料を修正：" + fixes.length + "件（ピンク）\n";
+  done += "・欠落行を復元：" + missing.length + "件（黄色）\n";
+  done += "・販売記録に無い行：" + orphans.length + "件（グレー）\n";
+  if (recDup.length) done += "\n販売記録で伝票番号が重複：" + recDup.slice(0, 5).join(", ") +
+    (recDup.length > 5 ? " ほか" : "") + "\n";
+  if (ledDup.length) done += "技術料台帳で伝票番号が重複：" + ledDup.slice(0, 5).join(", ") +
+    (ledDup.length > 5 ? " ほか" : "") + "\n";
+  if (orphans.length) done += "\nグレーの行は自動削除していません。内容を確認して手動で対応してください。";
+  ui.alert(done);
+}
+
+// ===== カード決済の伝票番号を集める =====
+// 販売記録で「カード決済」にチェックが付いている行の伝票番号を集合で返す。
+// 月次集計で技術料を当月から除外するために使う。
+function getCardInvoiceNos(ss) {
+  const set = {};
+  const sheet = ss.getSheetByName(SHEET_RECORDS);
+  if (!sheet || sheet.getLastRow() < 2) return set;
+  const cm = buildColMap(sheet, null);
+  const C = cm.idx;
+  if (!("カード決済" in C) || !("伝票番号" in C)) return set;  // 列が未追加なら何もしない
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues();
+  rows.forEach(function (r) {
+    if (!isChecked(r[C["カード決済"]])) return;
+    const no = String(r[C["伝票番号"]] || "").trim();
+    if (no) set[no] = true;
+  });
+  return set;
+}
+
+// ===== カード決済台帳への転記 =====
+// 指定月のカード決済✅付きレコードを台帳へコピーする。
+// 伝票番号で重複チェックするので、月次集計を何度実行しても二重に増えない。
+// 戻り値：今回追加した件数
+function writeCardLedger(ss, year, month) {
+  const rec = ss.getSheetByName(SHEET_RECORDS);
+  if (!rec || rec.getLastRow() < 2) return 0;
+  const cm = buildColMap(rec, null);
+  const C = cm.idx;
+  if (!("カード決済" in C)) return 0;
+  const rows = rec.getRange(2, 1, rec.getLastRow() - 1, cm.count).getValues();
+
+  // 台帳シート（無ければ作成）
+  let ledger = ss.getSheetByName(SHEET_CARD_LEDGER);
+  if (!ledger) {
+    ledger = ss.insertSheet(SHEET_CARD_LEDGER);
+    ledger.appendRow(CARD_LEDGER_COLS);
+    const h = ledger.getRange(1, 1, 1, CARD_LEDGER_COLS.length);
+    h.setBackground("#1a5c3a").setFontColor("#ffffff").setFontWeight("bold");
+    ledger.setFrozenRows(1);
+    WIDE_COLS.forEach(function (name) {
+      const i = CARD_LEDGER_COLS.indexOf(name);
+      if (i >= 0) ledger.setColumnWidth(i + 1, 400);
+    });
+  }
+  const lcm = buildColMap(ledger, null);
+  const LC = lcm.idx;
+
+  // 既に転記済みの伝票番号（重複防止）
+  const already = {};
+  if (ledger.getLastRow() >= 2 && ("伝票番号" in LC)) {
+    const ex = ledger.getRange(2, 1, ledger.getLastRow() - 1, lcm.count).getValues();
+    ex.forEach(function (r) {
+      const no = String(r[LC["伝票番号"]] || "").trim();
+      if (no) already[no] = true;
+    });
+  }
+
+  const toAdd = [];
+  rows.forEach(function (r) {
+    if (!isChecked(r[C["カード決済"]])) return;
+    const d = parseVisitDate(r[C["会計日"]]);
+    if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
+    const no = String(r[C["伝票番号"]] || "").trim();
+    if (!no || already[no]) return;
+    already[no] = true;
+
+    const out = new Array(lcm.count).fill("");
+    CARD_LEDGER_COLS.forEach(function (name) {
+      if (!(name in LC)) return;
+      if (name === "精算済") { out[LC[name]] = false; return; }  // 振込確認後に手動チェック
+      if (name in C) out[LC[name]] = r[C[name]];
+    });
+    toAdd.push(out);
+  });
+
+  if (toAdd.length) {
+    const start = ledger.getLastRow() + 1;
+    ledger.getRange(start, 1, toAdd.length, lcm.count).setValues(toAdd);
+    if ("精算済" in LC) {
+      ledger.getRange(start, LC["精算済"] + 1, toAdd.length, 1).insertCheckboxes();
+    }
+  }
+  return toAdd.length;
 }
 
 // ===== 月次集計 =====
@@ -524,14 +882,25 @@ function generateMonthlyGigiReport(year, month) {
     return;
   }
 
+  // カード・電子決済分は振込後に給与加算するルールのため、当月の技術料からは除外する。
+  // （売上は販売記録側に残るので、そちらには影響しない）
+  const cardNos = getCardInvoiceNos(ss);
+
   const allData = ledger.getRange(2, 1, ledger.getLastRow() - 1, 7).getValues();
+  let cardExcluded = 0;
   const filtered = allData.filter(row => {
     const d = parseVisitDate(row[1]);
-    return d && d.getFullYear() === year && (d.getMonth() + 1) === month;
+    if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return false;
+    const no = String(row[2] || "").trim();   // C列：伝票番号
+    if (no && cardNos[no]) { cardExcluded++; return false; }
+    return true;
   });
 
   if (filtered.length === 0) {
-    SpreadsheetApp.getUi().alert(year + "年" + month + "月のデータが技術料台帳にありません。");
+    SpreadsheetApp.getUi().alert(
+      year + "年" + month + "月の集計対象データがありません。" +
+      (cardExcluded > 0 ? "\n（カード決済として除外：" + cardExcluded + "件）" : "")
+    );
     return;
   }
 
@@ -716,11 +1085,22 @@ function generateMonthlyGigiReport(year, month) {
     report.getRange(2, 3, totalRowNum - 1, headers.length - 2).setNumberFormat("#,##0");
   }
 
+  // ---- 12. カード決済台帳へ転記（伝票番号で重複チェック済み） ----
+  let cardCopied = 0;
+  try {
+    cardCopied = writeCardLedger(ss, year, month);
+  } catch (e) {
+    SpreadsheetApp.getUi().alert("カード決済台帳への転記でエラーが発生しました：\n" + e.message);
+  }
+
   SpreadsheetApp.getUi().alert(
     "月次集計を新規ファイルとして保存しました。\n" +
     "ファイル名: 技術料月次集計_" + year + "年" + String(month).padStart(2, "0") + "月\n" +
     "保存先: マイドライブ > ガイア動物病院 > 獣医技術料 月次集計\n" +
-    "データ行数: " + filtered.length + "行"
+    "データ行数: " + filtered.length + "行\n" +
+    "\n" +
+    "カード決済（当月の技術料から除外）: " + cardExcluded + "件\n" +
+    "カード決済台帳へ新たに転記: " + cardCopied + "件"
   );
 }
 
