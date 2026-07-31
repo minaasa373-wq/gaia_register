@@ -220,6 +220,8 @@ function buildStaffRow(container, idx, removable) {
   sel.innerHTML = `<option value="">-- 選択 --</option>` + state.staff.map(s =>
     `<option value="${escapeHtml(s.name)}">${escapeHtml(s.name)}</option>`
   ).join("");
+  // 獣医を選んだ時点で警告を消す／看護師に変えたら再表示する
+  sel.addEventListener("change", updateVetWarning);
   row.appendChild(sel);
 
   if (removable) {
@@ -230,6 +232,7 @@ function buildStaffRow(container, idx, removable) {
     delBtn.onclick = () => {
       row.remove();
       updateAddStaffBtn();
+      updateVetWarning();  // 獣医の行を消したら警告を出し直す
     };
     row.appendChild(delBtn);
   }
@@ -374,14 +377,36 @@ function buildPetDisplay(rows) {
   return parts.length ? `（${parts.join("、")}）` : "";
 }
 
-// 担当人数を返す（選択済みの行だけカウント）
-function getStaffCount() {
+// 非獣医の担当者名。担当者マスタの「担当者名」がこれと完全一致する人は
+// 技術料の配分対象外として扱う（歩合の対象外のため）。
+// 販売記録の「担当者」列には残すが、技術料台帳の「担当獣医」「担当人数」からは除く。
+const NON_VET_NAMES = ["看護師"];
+
+function isVetName(name) {
+  return !NON_VET_NAMES.includes(String(name).trim());
+}
+
+// 選択済みの担当者のうち獣医だけを返す（配列）
+function getSelectedVets() {
   const area = document.getElementById("staffArea");
-  let count = 0;
+  const names = [];
   area.querySelectorAll(".staff-select").forEach(sel => {
-    if (sel.value.trim()) count++;
+    const v = sel.value.trim();
+    if (v && isVetName(v)) names.push(v);
   });
-  return count || 1; // 最低1（ゼロ除算回避）
+  return names;
+}
+
+// 技術料台帳に書く「担当獣医」（カンマ区切り。看護師は含めない）
+function getSelectedVetStaff() {
+  return getSelectedVets().join(",");
+}
+
+// 担当人数を返す（技術料の配分に使うため獣医のみ数える）
+// 看護師を含めて数えると、看護師＋獣医1名の会計が月次集計で
+// 「複数担当」に落ちて手動配分が必要になってしまう。
+function getStaffCount() {
+  return getSelectedVets().length;
 }
 
 // 担当者UIを1人にリセット（会計確定後）
@@ -783,7 +808,7 @@ function buildGigiPrintLine() {
   const nonVac = calcNonVaccineGigi();
   const vac = calcVaccineGigi();
   const cnt = getStaffCount();
-  return `<div class="print-gigi">技術料　通常 ¥${nonVac.toLocaleString()} ／ ワクチン ¥${vac.toLocaleString()} ／ 担当 ${cnt}名</div>`;
+  return `<div class="print-gigi">技術料　通常 ¥${nonVac.toLocaleString()} ／ ワクチン ¥${vac.toLocaleString()} ／ 担当獣医 ${cnt}名</div>`;
 }
 
 // ワクチン種類別の件数を集計
@@ -1515,6 +1540,7 @@ function renderCart() {
   }
   document.getElementById("cartCount").textContent = state.cart.length + ` 件 / ${MAX_CART_ITEMS}`;
   recalc();
+  updateVetWarning();
 }
 
 function selectCartItem(itemId) {
@@ -1618,6 +1644,32 @@ function recalc() {
   return { subtotal, tax, total };
 }
 
+// 技術料が発生している品目名の一覧（重複は除く）
+// 警告メッセージで「どれが原因か」を示すために使う。
+function getGigiItemNames() {
+  const names = [];
+  state.cart.forEach(item => {
+    if (calcItemGigi(item) > 0) {
+      const n = cartDispName(item);
+      if (!names.includes(n)) names.push(n);
+    }
+  });
+  return names;
+}
+
+// 技術料があるのに担当獣医が1人も選ばれていない状態か
+// この状態で記録すると、技術料が誰の分か分からなくなる。
+function needsVetSelection() {
+  return calcTotalGigi() > 0 && getSelectedVets().length === 0;
+}
+
+// 担当者欄の警告表示を更新する（カート変更・担当者変更のたびに呼ぶ）
+function updateVetWarning() {
+  const area = document.getElementById("staffArea");
+  if (!area) return;
+  area.classList.toggle("needs-vet", needsVetSelection());
+}
+
 // ===== 仕切書プレビュー =====
 function openReceipt() {
   if (state.cart.length === 0) return;
@@ -1626,6 +1678,17 @@ function openReceipt() {
   const staffStr = getSelectedStaff();
   if (!staffStr) {
     showToast("担当者を選択してください", "error");
+    return;
+  }
+
+  // 技術料があるのに担当獣医が未選択なら会計に進ませない。
+  // このまま記録すると技術料が誰の分か分からなくなり、給与計算で追えなくなる。
+  // 看護師が行った処置なら、品目側で看護師（＊印）を選べば技術料0になる。
+  if (needsVetSelection()) {
+    const names = getGigiItemNames();
+    const list = names.slice(0, 3).join("、") + (names.length > 3 ? ` ほか${names.length - 3}件` : "");
+    showToast("技術料のある項目が入っています：" + list + "／担当獣医を選択してください", "error");
+    updateVetWarning();
     return;
   }
 
@@ -1866,6 +1929,8 @@ async function sendToGAS() {
     total: total,
     // 【第2弾】技術料データを追加
     staffCount: getStaffCount(),
+    // 技術料台帳の「担当獣医」に書く名前（看護師を除いた獣医のみ）
+    vetStaff: getSelectedVetStaff(),
     gigiTotal: calcTotalGigi(),
     gigiNonVaccine: calcNonVaccineGigi(),
     gigiVaccine: calcVaccineGigi(),

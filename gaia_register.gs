@@ -198,6 +198,21 @@ function searchRecords(params) {
   };
 }
 
+// 技術料台帳の「担当獣医」に含めない担当者名（歩合の対象外）
+// 販売記録の「担当者」列には残すが、技術料の配分対象からは外す。
+// フロント側（gaia_register.js の NON_VET_NAMES）と揃えること。
+const NON_VET_NAMES = ["看護師"];
+
+// カンマ区切りの担当者名から非獣医を取り除く
+// 例）"看護師,南繁" → "南繁"　／　"看護師" → ""
+function stripNonVets(staffStr) {
+  return String(staffStr || "")
+    .split(",")
+    .map(function (s) { return s.trim(); })
+    .filter(function (s) { return s && NON_VET_NAMES.indexOf(s) === -1; })
+    .join(",");
+}
+
 // ===== 列名 → 位置 の対応表を作る =====
 // 1行目のヘッダーを読んで { "会計日": 1, ... }（0始まり）を返す。
 // required を渡すと、欠けている列があった時点で分かりやすいエラーを投げる。
@@ -295,6 +310,11 @@ function doPost(e) {
     const gigiVaccine    = Number(data.gigiVaccine)     || 0;
     const staffCount     = Number(data.staffCount)      || 1;
     const gigiSnap       = data.gigiSnapshot || "";
+    // 技術料台帳に書く担当獣医。看護師を除いた獣医のみ（クライアントで除外済み）。
+    // 古いクライアントからは vetStaff が来ないので、その場合は担当者から取り除く。
+    const vetStaffStr    = (data.vetStaff !== undefined && data.vetStaff !== null)
+                             ? String(data.vetStaff)
+                             : stripNonVets(staffStr);
 
     // 販売記録へ1行追加（列は名前で位置を引くので、並べ替えても壊れない）
     const row = new Array(cm.count).fill("");
@@ -325,7 +345,7 @@ function doPost(e) {
     });
 
     // ---- 技術料台帳への書き込み ----
-    writeGigiLedger(ss, now, visitDate, invoiceNo, staffStr, gigiNonVaccine, gigiVaccine, staffCount);
+    writeGigiLedger(ss, now, visitDate, invoiceNo, vetStaffStr, gigiNonVaccine, gigiVaccine, staffCount);
 
     // ---- ワクチン台帳への書き込み（案3b）----
     writeVaccineLedger(ss, now, visitDate, invoiceNo, data.vaccineCounts);
@@ -738,7 +758,7 @@ function checkGigiLedger() {
       out[LC["記録日時"]]       = s.recordedAt;
       out[LC["会計日"]]         = s.visitDate;
       out[LC["伝票番号"]]       = s.invoiceRaw;
-      out[LC["担当獣医"]]       = s.staff;
+      out[LC["担当獣医"]]       = stripNonVets(s.staff);
       out[LC["通常技術料"]]     = s.gigiNon;
       out[LC["ワクチン技術料"]] = s.gigiVac;
       out[LC["担当人数"]]       = s.staffCount;
