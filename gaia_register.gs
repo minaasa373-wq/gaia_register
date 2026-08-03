@@ -52,7 +52,7 @@ const ORPHAN_COLOR  = "#dcdcdc";  // グレー：販売記録に対応が無い�
 // カード決済台帳の列
 const CARD_LEDGER_COLS = [
   "記録日時", "会計日", "伝票番号", "担当者", "飼い主名", "ペット名",
-  "明細", "合計", "通常技術料", "ワクチン技術料", "担当人数", "技術料明細", "精算済"
+  "明細", "合計", "通常技術料", "ワクチン技術料", "担当人数", "技術料明細", "精算済", "集計済み"
 ];
 const SHEET_VACCINE_LEDGER = "ワクチン台帳";      // 案3b：ワクチン種類別件数
 
@@ -804,6 +804,54 @@ function getCardInvoiceNos(ss) {
   return set;
 }
 
+// ===== カード台帳から「繰越分」を集める =====
+// 精算済（振込確認済み）にチェックがあり、まだどの月の給与にも乗せていない行を返す。
+// 会計日ではなく「入金が確認できたか」で拾うので、7月の会計でも8月に振り込まれれば
+// 8月の給与に乗る。二重計上は「集計済み」列で防ぐ（記入済みの行は拾わない）。
+// 戻り値：{ rows: [{sheetRow, invoiceNo, visitDate, vet, gigiNon, gigiVac, staffCount}], count }
+function getCardCarryover(ss) {
+  const empty = { rows: [], count: 0 };
+  const ledger = ss.getSheetByName(SHEET_CARD_LEDGER);
+  if (!ledger || ledger.getLastRow() < 2) return empty;
+
+  const lcm = buildColMap(ledger, null);
+  const LC = lcm.idx;
+  // 「集計済み」列が無い古い台帳では繰越を扱えない（誤集計を避けるため何もしない）
+  if (!("精算済" in LC) || !("集計済み" in LC)) return empty;
+
+  const data = ledger.getRange(2, 1, ledger.getLastRow() - 1, lcm.count).getValues();
+  const rows = [];
+  data.forEach(function (r, i) {
+    if (!isChecked(r[LC["精算済"]])) return;                       // 未入金は対象外
+    if (String(r[LC["集計済み"]] || "").trim() !== "") return;      // 既に給与へ反映済み
+    rows.push({
+      sheetRow:   i + 2,                                          // 実際の行番号（ヘッダー分+2）
+      invoiceNo:  String(r[LC["伝票番号"]] || "").trim(),
+      visitDate:  r[LC["会計日"]],
+      vet:        String(r[LC["担当者"]] || "").trim(),
+      gigiNon:    Number(r[LC["通常技術料"]]) || 0,
+      gigiVac:    Number(r[LC["ワクチン技術料"]]) || 0,
+      staffCount: Number(r[LC["担当人数"]]) || 1
+    });
+  });
+  return { rows: rows, count: rows.length };
+}
+
+// 繰越として給与に乗せた行に、その年月を書き込む（次回以降は拾われなくなる）
+function markCardCarryover(ss, carryRows, year, month) {
+  if (!carryRows.length) return;
+  const ledger = ss.getSheetByName(SHEET_CARD_LEDGER);
+  if (!ledger) return;
+  const lcm = buildColMap(ledger, null);
+  const LC = lcm.idx;
+  if (!("集計済み" in LC)) return;
+
+  const tag = year + "-" + ("0" + month).slice(-2);   // 例：2026-08
+  carryRows.forEach(function (c) {
+    ledger.getRange(c.sheetRow, LC["集計済み"] + 1).setValue(tag);
+  });
+}
+
 // ===== カード決済台帳への転記 =====
 // 指定月のカード決済✅付きレコードを台帳へコピーする。
 // 伝票番号で重複チェックするので、月次集計を何度実行しても二重に増えない。
@@ -855,6 +903,7 @@ function writeCardLedger(ss, year, month) {
     CARD_LEDGER_COLS.forEach(function (name) {
       if (!(name in LC)) return;
       if (name === "精算済") { out[LC[name]] = false; return; }  // 振込確認後に手動チェック
+      if (name === "集計済み") { out[LC[name]] = ""; return; }   // 給与に乗せた月を後から記入する
       if (name in C) out[LC[name]] = r[C[name]];
     });
     toAdd.push(out);
@@ -921,7 +970,10 @@ function generateMonthlyGigiReport(year, month) {
     return true;
   });
 
-  if (filtered.length === 0) {
+  // カード台帳の繰越分（入金確認済みで、まだ給与に乗せていない過去の会計）
+  const carry = getCardCarryover(ss);
+
+  if (filtered.length === 0 && carry.count === 0) {
     SpreadsheetApp.getUi().alert(
       year + "年" + month + "月の集計対象データがありません。" +
       (cardExcluded > 0 ? "\n（カード決済として除外：" + cardExcluded + "件）" : "")
@@ -971,21 +1023,12 @@ function generateMonthlyGigiReport(year, month) {
   // ---- 6. データ行を書き込み ----
   let rowNum = 2;
 
-  filtered.forEach(row => {
-    const invoiceNo    = row[2] || "";
-    const vetName      = String(row[3] || "").trim();
-    const normalGigi   = Number(row[4]) || 0;
-    const vaccineGigi  = Number(row[5]) || 0;
-    const staffCountVal = Number(row[6]) || 1;
-
-    const outRow = new Array(headers.length).fill("");
-    outRow[0] = invoiceNo;
-    outRow[1] = formatVisitDate(row[1]);
-
+  // 1件分の技術料を、担当獣医の列（複数担当なら「複数担当」列）へ振り分ける。
+  // 当月分と繰越分で同じルールを使うため関数化している。
+  function fillGigiCells(outRow, vetName, normalGigi, vaccineGigi, staffCountVal) {
     if (vaccineGigi > 0) {
       outRow[vaccineCol - 1] = vaccineGigi;
     }
-
     if (normalGigi > 0) {
       if (staffCountVal >= 2) {
         outRow[multiCol - 1] = normalGigi;
@@ -998,16 +1041,93 @@ function generateMonthlyGigiReport(year, month) {
         }
       }
     }
+  }
+
+  filtered.forEach(row => {
+    const invoiceNo    = row[2] || "";
+    const vetName      = String(row[3] || "").trim();
+    const normalGigi   = Number(row[4]) || 0;
+    const vaccineGigi  = Number(row[5]) || 0;
+    const staffCountVal = Number(row[6]) || 1;
+
+    const outRow = new Array(headers.length).fill("");
+    outRow[0] = invoiceNo;
+    outRow[1] = formatVisitDate(row[1]);
+
+    fillGigiCells(outRow, vetName, normalGigi, vaccineGigi, staffCountVal);
 
     report.appendRow(outRow);
     rowNum++;
   });
 
-  // ---- 7. 合計行 ----
+  const currentEndRow = rowNum - 1;   // 当月分の最終行
+
+  // ---- 6b. 繰越分（カード決済で入金確認できた過去の会計）----
+  // 当月の稼働と混ざらないよう、区切り行を挟んで下にまとめて出す。
+  let carryStartRow = 0, carryEndRow = 0;
+  if (carry.count > 0) {
+    const sepRow = new Array(headers.length).fill("");
+    sepRow[0] = "繰越（カード入金分）";
+    report.appendRow(sepRow);
+    const sepRange = report.getRange(rowNum, 1, 1, headers.length);
+    sepRange.setFontWeight("bold");
+    sepRange.setBackground("#e3f2fd");
+    rowNum++;
+
+    carryStartRow = rowNum;
+    carry.rows.forEach(function (c) {
+      const outRow = new Array(headers.length).fill("");
+      outRow[0] = c.invoiceNo;
+      outRow[1] = formatVisitDate(c.visitDate);
+      fillGigiCells(outRow, c.vet, c.gigiNon, c.gigiVac, c.staffCount);
+      report.appendRow(outRow);
+      rowNum++;
+    });
+    carryEndRow = rowNum - 1;
+
+    // 繰越行は薄い青で塗り、当月分と見分けられるようにする
+    report.getRange(carryStartRow, 1, carry.count, headers.length)
+      .setBackground("#f3f9ff");
+  }
+
+  // ---- 7. 小計・合計行 ----
+  // 繰越がある場合は「当月分」「繰越分」を分けて出し、その和を合計とする。
+  // どの数字が今月の稼働で、どれが過去分の入金かを一目で分かるようにするため。
+  let currentSubRowNum = 0, carrySubRowNum = 0;
+
+  if (carry.count > 0) {
+    // 当月分の小計
+    const curRow = ["当月分 小計", ""];
+    for (let c = 3; c <= headers.length; c++) {
+      const cl = columnToLetter(c);
+      curRow.push(filtered.length ? "=SUM(" + cl + "2:" + cl + currentEndRow + ")" : 0);
+    }
+    report.appendRow(curRow);
+    currentSubRowNum = rowNum;
+    report.getRange(rowNum, 1, 1, headers.length).setBackground("#f1f8e9");
+    rowNum++;
+
+    // 繰越分の小計
+    const carRow = ["繰越分 小計", ""];
+    for (let c = 3; c <= headers.length; c++) {
+      const cl = columnToLetter(c);
+      carRow.push("=SUM(" + cl + carryStartRow + ":" + cl + carryEndRow + ")");
+    }
+    report.appendRow(carRow);
+    carrySubRowNum = rowNum;
+    report.getRange(rowNum, 1, 1, headers.length).setBackground("#e3f2fd");
+    rowNum++;
+  }
+
   const totalRow = ["合計", ""];
   for (let c = 3; c <= headers.length; c++) {
     const colLetter = columnToLetter(c);
-    totalRow.push("=SUM(" + colLetter + "2:" + colLetter + (rowNum - 1) + ")");
+    if (carry.count > 0) {
+      // 当月小計＋繰越小計（明細を二重に足さないよう小計同士を足す）
+      totalRow.push("=" + colLetter + currentSubRowNum + "+" + colLetter + carrySubRowNum);
+    } else {
+      totalRow.push("=SUM(" + colLetter + "2:" + colLetter + (rowNum - 1) + ")");
+    }
   }
   report.appendRow(totalRow);
   const totalRowNum = rowNum;
@@ -1118,6 +1238,24 @@ function generateMonthlyGigiReport(year, month) {
     SpreadsheetApp.getUi().alert("カード決済台帳への転記でエラーが発生しました：\n" + e.message);
   }
 
+  // ---- 13. 繰越に使った行へ「集計済み」を記入（次回以降は拾わない）----
+  // レポート作成が完全に終わってから記入する。途中で失敗した場合に
+  // 「集計済みなのにレポートが無い」状態を作らないため。
+  let carryMarked = 0;
+  if (carry.count > 0) {
+    try {
+      markCardCarryover(ss, carry.rows, year, month);
+      carryMarked = carry.count;
+    } catch (e) {
+      SpreadsheetApp.getUi().alert(
+        "繰越分の「集計済み」記入でエラーが発生しました：\n" + e.message +
+        "\n\n集計表には繰越分が含まれています。カード決済台帳の「集計済み」列に " +
+        year + "-" + ("0" + month).slice(-2) + " を手動で記入してください" +
+        "（記入しないと来月も同じ分が繰越として計上されます）。"
+      );
+    }
+  }
+
   SpreadsheetApp.getUi().alert(
     "月次集計を新規ファイルとして保存しました。\n" +
     "ファイル名: 技術料月次集計_" + year + "年" + String(month).padStart(2, "0") + "月\n" +
@@ -1125,7 +1263,8 @@ function generateMonthlyGigiReport(year, month) {
     "データ行数: " + filtered.length + "行\n" +
     "\n" +
     "カード決済（当月の技術料から除外）: " + cardExcluded + "件\n" +
-    "カード決済台帳へ新たに転記: " + cardCopied + "件"
+    "カード決済台帳へ新たに転記: " + cardCopied + "件\n" +
+    "繰越として今回の給与に加算: " + carryMarked + "件"
   );
 }
 
@@ -1178,7 +1317,25 @@ function promptMonthlyReport() {
     ui.alert("形式が正しくありません。例: 2026-06");
     return;
   }
-  generateMonthlyGigiReport(parseInt(m[1], 10), parseInt(m[2], 10));
+  const year = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+
+  // 繰越がある場合は事前に知らせる。集計を実行すると「集計済み」が記入され、
+  // 次回以降は拾われなくなるので、実行前に件数を確認できるようにしている。
+  const carry = getCardCarryover(SpreadsheetApp.getActiveSpreadsheet());
+  if (carry.count > 0) {
+    let sum = 0;
+    carry.rows.forEach(function (c) { sum += c.gigiNon + c.gigiVac; });
+    const msg =
+      "カード決済台帳に、入金確認済みでまだ給与に反映していない会計が " +
+      carry.count + "件（技術料 合計 ¥" + sum.toLocaleString() + "）あります。\n\n" +
+      "これらを " + year + "年" + month + "月分の給与に繰越として加算し、\n" +
+      "台帳の「集計済み」列に " + year + "-" + ("0" + month).slice(-2) + " を記入します。\n\n" +
+      "続行しますか？";
+    if (ui.alert("繰越分の確認", msg, ui.ButtonSet.OK_CANCEL) !== ui.Button.OK) return;
+  }
+
+  generateMonthlyGigiReport(year, month);
 }
 
 // ===== ユーティリティ =====
