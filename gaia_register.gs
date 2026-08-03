@@ -828,7 +828,10 @@ function getCardCarryover(ss) {
       sheetRow:   i + 2,                                          // 実際の行番号（ヘッダー分+2）
       invoiceNo:  String(r[LC["伝票番号"]] || "").trim(),
       visitDate:  r[LC["会計日"]],
-      vet:        String(r[LC["担当者"]] || "").trim(),
+      // カード台帳の「担当者」は販売記録からのコピーなので看護師を含む。
+      // 技術料台帳の「担当獣医」と揃えないと、獣医1名でも名前が一致せず
+      // 「複数担当」列へ落ちてしまうため、ここで非獣医を取り除く。
+      vet:        stripNonVets(r[LC["担当者"]]),
       gigiNon:    Number(r[LC["通常技術料"]]) || 0,
       gigiVac:    Number(r[LC["ワクチン技術料"]]) || 0,
       staffCount: Number(r[LC["担当人数"]]) || 1
