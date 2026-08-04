@@ -56,6 +56,21 @@ const CARD_LEDGER_COLS = [
 ];
 const SHEET_VACCINE_LEDGER = "ワクチン台帳";      // 案3b：ワクチン種類別件数
 
+// 未チェック伝票のダイアログに並べる最大件数（超えた分は「ほか◯件」とまとめる）
+const UNCHECKED_LIST_MAX = 20;
+
+// 月次集計に用意する「手動配分」の入力行数
+// 複数担当の技術料を獣医ごとに割り振って記入する欄。
+// 足りなければシート上で行を挿入すればよい（合計のSUM範囲は自動で広がる）。
+// 月次集計に用意する「手動配分」ブロックの行数。
+// 最終行は自動でワクチン技術料の頭割りが入るので、手入力できるのは
+// (MANUAL_ALLOC_ROWS - 1) 行になる。
+const MANUAL_ALLOC_ROWS = 6;
+
+// ワクチン技術料を頭割りする人数（獣医の人数）。
+// 月次集計の「÷5」表示と、手動配分ブロック最終行の自動転記で使う。
+const VACCINE_SPLIT_COUNT = 5;
+
 const GROUP_CARE = "診療";
 const GROUP_DRUG = "薬・物販";
 // 単位はマスタの記入どおりに扱う方針のため、既定値による補完は行わない
@@ -213,6 +228,21 @@ function stripNonVets(staffStr) {
     .join(",");
 }
 
+// 技術料台帳の「担当獣医」に書く名前を決める
+// 獣医が1人でもいれば獣医だけを書く（従来通り）。
+// 獣医が1人もいない会計（看護師のみ）は空欄になって転記漏れに見えてしまうため、
+// 選ばれた担当者名をそのまま残す。
+// 例）"南繁" → "南繁" ／ "看護師,南繁" → "南繁" ／ "看護師" → "看護師"
+function vetStaffForLedger(vetsStr, staffStr) {
+  const vets = String(vetsStr || "").trim();
+  if (vets) return vets;
+  return String(staffStr || "")
+    .split(",")
+    .map(function (s) { return s.trim(); })
+    .filter(function (s) { return s; })
+    .join(",");
+}
+
 // ===== 列名 → 位置 の対応表を作る =====
 // 1行目のヘッダーを読んで { "会計日": 1, ... }（0始まり）を返す。
 // required を渡すと、欠けている列があった時点で分かりやすいエラーを投げる。
@@ -312,9 +342,11 @@ function doPost(e) {
     const gigiSnap       = data.gigiSnapshot || "";
     // 技術料台帳に書く担当獣医。看護師を除いた獣医のみ（クライアントで除外済み）。
     // 古いクライアントからは vetStaff が来ないので、その場合は担当者から取り除く。
-    const vetStaffStr    = (data.vetStaff !== undefined && data.vetStaff !== null)
-                             ? String(data.vetStaff)
-                             : stripNonVets(staffStr);
+    const vetStaffStr    = vetStaffForLedger(
+                             (data.vetStaff !== undefined && data.vetStaff !== null)
+                               ? String(data.vetStaff)
+                               : stripNonVets(staffStr),
+                             staffStr);
 
     // 販売記録へ1行追加（列は名前で位置を引くので、並べ替えても壊れない）
     const row = new Array(cm.count).fill("");
@@ -600,6 +632,7 @@ function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("🏥 ガイア")
     .addItem("技術料台帳の整合チェック", "checkGigiLedger")
+    .addItem("未チェック伝票の確認", "promptUncheckedRecords")
     .addSeparator()
     .addItem("月次集計を実行", "promptMonthlyReport")
     .addSeparator()
@@ -758,7 +791,7 @@ function checkGigiLedger() {
       out[LC["記録日時"]]       = s.recordedAt;
       out[LC["会計日"]]         = s.visitDate;
       out[LC["伝票番号"]]       = s.invoiceRaw;
-      out[LC["担当獣医"]]       = stripNonVets(s.staff);
+      out[LC["担当獣医"]]       = vetStaffForLedger(stripNonVets(s.staff), s.staff);
       out[LC["通常技術料"]]     = s.gigiNon;
       out[LC["ワクチン技術料"]] = s.gigiVac;
       out[LC["担当人数"]]       = s.staffCount;
@@ -804,6 +837,83 @@ function getCardInvoiceNos(ss) {
   return set;
 }
 
+// ===== 未チェックの会計を集める =====
+// 販売記録のうち、指定月の会計日で「確認済み」にも「カード決済」にも
+// チェックが付いていない行を返す。
+//   - カード決済✅  → 技術料は台帳へ回し、入金確認後に繰越で加算する（従来通り）
+//   - 確認済み✅    → その月の技術料として集計する
+//   - どちらも無し  → 会計の確認がまだ終わっていないとみなし、集計から外す
+// 戻り値：{ nos: {伝票番号: true}, rows: [{no, date}], count }
+function getUncheckedRecords(ss, year, month) {
+  const empty = { nos: {}, rows: [], count: 0 };
+  const sheet = ss.getSheetByName(SHEET_RECORDS);
+  if (!sheet || sheet.getLastRow() < 2) return empty;
+
+  const cm = buildColMap(sheet, null);
+  const C = cm.idx;
+  // 列が未追加の環境では従来通り（何も除外しない）
+  if (!("確認済み" in C) || !("カード決済" in C) ||
+      !("伝票番号" in C) || !("会計日" in C)) return empty;
+
+  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues();
+  const nos = {};
+  const list = [];
+  rows.forEach(function (r) {
+    const d = parseVisitDate(r[C["会計日"]]);
+    if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
+    if (isChecked(r[C["カード決済"]])) return;   // カードは別ルートで処理される
+    if (isChecked(r[C["確認済み"]])) return;     // 確認済みなら対象外
+
+    // 照合は正規化した番号で行うが、画面に出すのはシート上の見た目のまま
+    // （normInvoice は先頭ゼロを落とすので "0004" が "4" と表示されてしまう）
+    const raw = String(r[C["伝票番号"]] || "").trim();
+    const key = normInvoice(raw);
+    if (!key) return;                            // 伝票番号が無い行は照合できない
+    if (nos[key]) return;                        // 同一伝票の複数行は1件として数える
+    nos[key] = true;
+    list.push({ no: raw, key: key, date: formatVisitDate(d) });
+  });
+  return { nos: nos, rows: list, count: list.length };
+}
+
+// 未チェック件数をダイアログで知らせる（メニューから実行。修正はしない）
+function promptUncheckedRecords() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(
+    "未チェック伝票の確認",
+    "対象年月を入力してください（例: 2026-07）",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+
+  const m = res.getResponseText().trim().match(/^(\d{4})-(\d{1,2})$/);
+  if (!m) {
+    ui.alert("形式が正しくありません。例: 2026-07");
+    return;
+  }
+  const year = parseInt(m[1], 10);
+  const month = parseInt(m[2], 10);
+
+  const un = getUncheckedRecords(SpreadsheetApp.getActiveSpreadsheet(), year, month);
+  if (un.count === 0) {
+    ui.alert("未チェック伝票の確認",
+      year + "年" + month + "月の会計は、すべて「確認済み」か「カード決済」に\n" +
+      "チェックが入っています。", ui.ButtonSet.OK);
+    return;
+  }
+
+  const shown = un.rows.slice(0, UNCHECKED_LIST_MAX);
+  let msg =
+    year + "年" + month + "月の会計のうち、「確認済み」にも「カード決済」にも\n" +
+    "チェックが無い伝票が " + un.count + "件 あります。\n\n" +
+    "このまま月次集計を実行すると、これらは集計に含まれません。\n\n" +
+    shown.map(function (r) { return "  " + r.date + "  伝票 " + r.no; }).join("\n");
+  if (un.count > shown.length) {
+    msg += "\n  … ほか " + (un.count - shown.length) + "件";
+  }
+  ui.alert("未チェック伝票の確認", msg, ui.ButtonSet.OK);
+}
+
 // ===== カード台帳から「繰越分」を集める =====
 // 精算済（振込確認済み）にチェックがあり、まだどの月の給与にも乗せていない行を返す。
 // 会計日ではなく「入金が確認できたか」で拾うので、7月の会計でも8月に振り込まれれば
@@ -831,7 +941,7 @@ function getCardCarryover(ss) {
       // カード台帳の「担当者」は販売記録からのコピーなので看護師を含む。
       // 技術料台帳の「担当獣医」と揃えないと、獣医1名でも名前が一致せず
       // 「複数担当」列へ落ちてしまうため、ここで非獣医を取り除く。
-      vet:        stripNonVets(r[LC["担当者"]]),
+      vet:        vetStaffForLedger(stripNonVets(r[LC["担当者"]]), r[LC["担当者"]]),
       gigiNon:    Number(r[LC["通常技術料"]]) || 0,
       gigiVac:    Number(r[LC["ワクチン技術料"]]) || 0,
       staffCount: Number(r[LC["担当人数"]]) || 1
@@ -963,13 +1073,21 @@ function generateMonthlyGigiReport(year, month) {
   // （売上は販売記録側に残るので、そちらには影響しない）
   const cardNos = getCardInvoiceNos(ss);
 
+  // 「確認済み」にも「カード決済」にもチェックが無い会計は、確認作業が
+  // 終わっていないものとして当月の集計から外す。
+  // 販売記録に見つからない伝票（孤立行）はここに入らないため従来通り集計される。
+  // そちらは整合チェックのグレー行で検出する。
+  const unchecked = getUncheckedRecords(ss, year, month);
+
   const allData = ledger.getRange(2, 1, ledger.getLastRow() - 1, 7).getValues();
   let cardExcluded = 0;
+  let uncheckedExcluded = 0;
   const filtered = allData.filter(row => {
     const d = parseVisitDate(row[1]);
     if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return false;
     const no = String(row[2] || "").trim();   // C列：伝票番号
     if (no && cardNos[no]) { cardExcluded++; return false; }
+    if (no && unchecked.nos[normInvoice(no)]) { uncheckedExcluded++; return false; }
     return true;
   });
 
@@ -979,7 +1097,8 @@ function generateMonthlyGigiReport(year, month) {
   if (filtered.length === 0 && carry.count === 0) {
     SpreadsheetApp.getUi().alert(
       year + "年" + month + "月の集計対象データがありません。" +
-      (cardExcluded > 0 ? "\n（カード決済として除外：" + cardExcluded + "件）" : "")
+      (cardExcluded > 0 ? "\n（カード決済として除外：" + cardExcluded + "件）" : "") +
+      (uncheckedExcluded > 0 ? "\n（確認済みチェックが無く除外：" + uncheckedExcluded + "件）" : "")
     );
     return;
   }
@@ -1010,6 +1129,7 @@ function generateMonthlyGigiReport(year, month) {
   const headers = ["伝票番号", "会計日"];
   staffList.forEach(name => headers.push(name));
   headers.push("複数担当");
+  headers.push("担当者");     // 複数担当に入った分だけ、誰の分かを表示する
   headers.push("ワクチン");
   report.appendRow(headers);
 
@@ -1020,8 +1140,9 @@ function generateMonthlyGigiReport(year, month) {
   report.setFrozenRows(1);
 
   const staffStartCol = 3;
-  const multiCol = staffStartCol + staffList.length;
-  const vaccineCol = multiCol + 1;
+  const multiCol   = staffStartCol + staffList.length;
+  const ownerCol   = multiCol + 1;    // 「担当者」列（文字列。集計対象外）
+  const vaccineCol = multiCol + 2;
 
   // ---- 6. データ行を書き込み ----
   let rowNum = 2;
@@ -1035,12 +1156,16 @@ function generateMonthlyGigiReport(year, month) {
     if (normalGigi > 0) {
       if (staffCountVal >= 2) {
         outRow[multiCol - 1] = normalGigi;
+        outRow[ownerCol - 1] = vetName;     // 誰と誰の分かを手配分の手がかりに
       } else {
         const vetIdx = staffList.indexOf(vetName);
         if (vetIdx >= 0) {
           outRow[staffStartCol - 1 + vetIdx] = normalGigi;
         } else {
+          // 担当者マスタに無い名前（退職者など）も複数担当へ寄せる。
+          // 名前を出しておかないと、なぜここに入ったのか分からなくなる。
           outRow[multiCol - 1] = normalGigi;
+          outRow[ownerCol - 1] = vetName;
         }
       }
     }
@@ -1102,6 +1227,7 @@ function generateMonthlyGigiReport(year, month) {
     // 当月分の小計
     const curRow = ["当月分 小計", ""];
     for (let c = 3; c <= headers.length; c++) {
+      if (c === ownerCol) { curRow.push(""); continue; }   // 文字列の列は集計しない
       const cl = columnToLetter(c);
       curRow.push(filtered.length ? "=SUM(" + cl + "2:" + cl + currentEndRow + ")" : 0);
     }
@@ -1113,6 +1239,7 @@ function generateMonthlyGigiReport(year, month) {
     // 繰越分の小計
     const carRow = ["繰越分 小計", ""];
     for (let c = 3; c <= headers.length; c++) {
+      if (c === ownerCol) { carRow.push(""); continue; }
       const cl = columnToLetter(c);
       carRow.push("=SUM(" + cl + carryStartRow + ":" + cl + carryEndRow + ")");
     }
@@ -1122,14 +1249,57 @@ function generateMonthlyGigiReport(year, month) {
     rowNum++;
   }
 
+  // ---- 7b. 手動配分の入力行 ----
+  // 複数担当の技術料は1行にまとまっているので、獣医ごとの配分は手作業になる。
+  // その入力欄をここに用意し、合計へ自動で足し込む。
+  // 「複数担当」列の金額は歩合計算に使っていないため、二重計上にはならない。
+  const beforeManualRow = rowNum - 1;   // 明細（＋小計）の最終行
+
+  report.appendRow(new Array(headers.length).fill(""));   // 明細と切り離す空行
+  rowNum++;
+
+  const manualStartRow = rowNum;
+  for (let i = 0; i < MANUAL_ALLOC_ROWS; i++) {
+    const mRow = new Array(headers.length).fill("");
+    if (i === 0) mRow[0] = "手動配分";
+    report.appendRow(mRow);
+    rowNum++;
+  }
+  const manualEndRow = rowNum - 1;      // このブロックの最終行＝ワクチン頭割りの行
+  const vaccineSplitRow = manualEndRow;
+  const totalRowNumAhead = manualEndRow + 1;   // 直後に合計行が来る
+
+  const manualRange = report.getRange(manualStartRow, 1, MANUAL_ALLOC_ROWS, headers.length);
+  manualRange.setBorder(true, true, true, true, true, true);
+  // 手入力する行だけを薄い黄色にする（最終行は自動計算なので色を変える）
+  report.getRange(manualStartRow, 1, MANUAL_ALLOC_ROWS - 1, headers.length)
+        .setBackground("#fffde7");
+  report.getRange(manualStartRow, 1, MANUAL_ALLOC_ROWS, 1).setFontWeight("bold");
+
+  // ---- 最終行：ワクチン技術料の頭割りを各獣医へ自動転記 ----
+  // 合計行のワクチン列を VACCINE_SPLIT_COUNT で割った額を、獣医の列に入れる。
+  // 看護師など非獣医の列は空のまま（歩合の対象外のため）。
+  // 参照先は合計行のワクチン列だけなので循環参照にはならない。
+  const vacColLetter = columnToLetter(vaccineCol);
+  report.getRange(vaccineSplitRow, 1).setValue("ワクチン ÷" + VACCINE_SPLIT_COUNT);
+  staffList.forEach(function (name, i) {
+    if (NON_VET_NAMES.indexOf(name) !== -1) return;   // 看護師には配らない
+    report.getRange(vaccineSplitRow, staffStartCol + i)
+          .setValue("=" + vacColLetter + totalRowNumAhead + "/" + VACCINE_SPLIT_COUNT);
+  });
+  report.getRange(vaccineSplitRow, 1, 1, headers.length).setBackground("#e8f5e9");
+
+  // ---- 7c. 合計行 ----
   const totalRow = ["合計", ""];
   for (let c = 3; c <= headers.length; c++) {
+    if (c === ownerCol) { totalRow.push(""); continue; }
     const colLetter = columnToLetter(c);
+    const manualSum = "SUM(" + colLetter + manualStartRow + ":" + colLetter + manualEndRow + ")";
     if (carry.count > 0) {
-      // 当月小計＋繰越小計（明細を二重に足さないよう小計同士を足す）
-      totalRow.push("=" + colLetter + currentSubRowNum + "+" + colLetter + carrySubRowNum);
+      // 当月小計＋繰越小計＋手動配分（明細を二重に足さないよう小計同士を足す）
+      totalRow.push("=" + colLetter + currentSubRowNum + "+" + colLetter + carrySubRowNum + "+" + manualSum);
     } else {
-      totalRow.push("=SUM(" + colLetter + "2:" + colLetter + (rowNum - 1) + ")");
+      totalRow.push("=SUM(" + colLetter + "2:" + colLetter + beforeManualRow + ")+" + manualSum);
     }
   }
   report.appendRow(totalRow);
@@ -1147,7 +1317,8 @@ function generateMonthlyGigiReport(year, month) {
     rateRow.push(rate > 0 ? rate + "%" : "");
   }
   rateRow.push(""); // 複数担当
-  rateRow.push("÷5"); // ワクチン
+  rateRow.push(""); // 担当者
+  rateRow.push("÷" + VACCINE_SPLIT_COUNT); // ワクチン
   report.appendRow(rateRow);
   const rateRowNum = rowNum;
 
@@ -1171,9 +1342,10 @@ function generateMonthlyGigiReport(year, month) {
     }
   }
   calcRow.push(""); // 複数担当
+  calcRow.push(""); // 担当者
   // ワクチン÷5
   const vaccineColLetter = columnToLetter(vaccineCol);
-  calcRow.push("=" + vaccineColLetter + totalRowNum + "/5");
+  calcRow.push("=" + vaccineColLetter + totalRowNum + "/" + VACCINE_SPLIT_COUNT);
   report.appendRow(calcRow);
   const calcRowNum = rowNum;
 
@@ -1227,7 +1399,7 @@ function generateMonthlyGigiReport(year, month) {
   report.setColumnWidth(1, 90);
   report.setColumnWidth(2, 90);
   for (let c = 3; c <= headers.length; c++) {
-    report.setColumnWidth(c, 100);
+    report.setColumnWidth(c, c === ownerCol ? 160 : 100);
   }
   if (totalRowNum > 2) {
     report.getRange(2, 3, totalRowNum - 1, headers.length - 2).setNumberFormat("#,##0");
@@ -1266,6 +1438,7 @@ function generateMonthlyGigiReport(year, month) {
     "データ行数: " + filtered.length + "行\n" +
     "\n" +
     "カード決済（当月の技術料から除外）: " + cardExcluded + "件\n" +
+    "確認済みチェックが無く除外: " + uncheckedExcluded + "件\n" +
     "カード決済台帳へ新たに転記: " + cardCopied + "件\n" +
     "繰越として今回の給与に加算: " + carryMarked + "件"
   );
