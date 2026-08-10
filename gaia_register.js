@@ -526,9 +526,15 @@ function isFavorite(p) {
   const v = (p.favorite || "").toString().trim();
   return v !== "" && v !== "0" && v.toLowerCase() !== "false";
 }
-// 担当者選択フラグ判定（〇 のときのみ。？ は保留なので対象外）
+// 担当者選択フラグ判定
+// マスタでは「まる」に見える文字が複数混在する。
+//   〇 U+3007（漢数字のゼロ）／ ◯ U+25EF（大きな丸）／ ○ U+25CB（白丸）ほか
+// 見た目で区別できず入力環境によって変わるため、丸に見える文字はまとめて有効とする。
+// 「？」は保留の意味なので従来通り対象外。
+const STAFF_PICK_MARKS = "\u3007\u25EF\u25CB\u25CE\u25CF\u2B55";   // 〇 ◯ ○ ◎ ● ⭕
 function isStaffPick(p) {
-  return (p.staffPick || "").toString().trim() === "〇";
+  const v = (p.staffPick || "").toString().trim();
+  return v.length === 1 && STAFF_PICK_MARKS.indexOf(v) !== -1;
 }
 // 整数固定かどうか
 function isIntegerOnly(p) {
