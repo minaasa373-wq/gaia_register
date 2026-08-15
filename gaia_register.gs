@@ -56,6 +56,13 @@ const CARD_LEDGER_COLS = [
 ];
 const SHEET_VACCINE_LEDGER = "ワクチン台帳";      // 案3b：ワクチン種類別件数
 
+// 特定の飼い主だけを抜き出す月次明細（メニュー「しっぽの会 明細を出力」）
+// 飼い主名にこの文字が含まれる伝票を対象にする。
+// 「しっぽの会」「しっぽ」「しっぽの会預かり」のような表記ゆれをまとめて拾うため、
+// 完全一致ではなく部分一致で判定する。
+const OWNER_REPORT_KEYWORD = "しっぽ";
+const OWNER_REPORT_LABEL   = "しっぽの会";
+
 // 未チェック伝票のダイアログに並べる最大件数（超えた分は「ほか◯件」とまとめる）
 const UNCHECKED_LIST_MAX = 20;
 
@@ -635,6 +642,7 @@ function onOpen() {
     .addItem("未チェック伝票の確認", "promptUncheckedRecords")
     .addSeparator()
     .addItem("月次集計を実行", "promptMonthlyReport")
+    .addItem(OWNER_REPORT_LABEL + " 明細を出力", "promptOwnerReport")
     .addSeparator()
     .addItem("初期セットアップ", "setupSheets")
     .addToUi();
@@ -1446,6 +1454,207 @@ function generateMonthlyGigiReport(year, month) {
 
 // ===== 月次集計ファイルをGoogleドライブの指定フォルダに作成 =====
 // マイドライブ > ガイア動物病院 > 獣医技術料 月次集計
+// ===== 特定の飼い主の明細を月単位で書き出す =====
+// 販売記録は1伝票1行で、品目は「技術料明細」列に改行区切りで入っている。
+//   例）フェノバール錠30㎎ | qty:90 | 単価:50 | 元単価:50 | 元技:0 | 技:0
+// これを1品目1行に展開して、金額を集計する。
+function parseGigiSnapshot(text) {
+  const out = [];
+  String(text || "").split("\n").forEach(function (line) {
+    const t = line.trim();
+    if (!t) return;
+    const parts = t.split("|").map(function (x) { return x.trim(); });
+    const name = parts[0];
+    if (!name) return;
+    // "qty:90" のような key:value を拾う（順序が変わっても壊れないように）
+    const kv = {};
+    parts.slice(1).forEach(function (seg) {
+      const i = seg.indexOf(":");
+      if (i > 0) kv[seg.slice(0, i).trim()] = seg.slice(i + 1).trim();
+    });
+    const qty   = Number(kv["qty"]);
+    const price = Number(kv["単価"]);
+    out.push({
+      name:  name,
+      qty:   isNaN(qty) ? 0 : qty,
+      price: isNaN(price) ? 0 : price,
+      gigi:  Number(kv["技"]) || 0,
+      amount: (isNaN(qty) ? 0 : qty) * (isNaN(price) ? 0 : price)
+    });
+  });
+  return out;
+}
+
+// メニュー：対象年月を聞いて明細ファイルを作る
+function promptOwnerReport() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(
+    OWNER_REPORT_LABEL + " 明細の出力",
+    "対象年月を入力してください（例: 2026-07）",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+
+  const m = res.getResponseText().trim().match(/^(\d{4})-(\d{1,2})$/);
+  if (!m) {
+    ui.alert("形式が正しくありません。例: 2026-07");
+    return;
+  }
+  generateOwnerReport(parseInt(m[1], 10), parseInt(m[2], 10));
+}
+
+function generateOwnerReport(year, month) {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const rec = ss.getSheetByName(SHEET_RECORDS);
+  if (!rec || rec.getLastRow() < 2) {
+    ui.alert("販売記録がありません。");
+    return;
+  }
+
+  const cm = buildColMap(rec, ["会計日", "伝票番号", "飼い主名", "ペット名", "技術料明細"]);
+  const C = cm.idx;
+  const rows = rec.getRange(2, 1, rec.getLastRow() - 1, cm.count).getValues();
+
+  // 対象月かつ飼い主名にキーワードを含む伝票を集める
+  const slips = [];
+  rows.forEach(function (r) {
+    const d = parseVisitDate(r[C["会計日"]]);
+    if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
+    const owner = String(r[C["飼い主名"]] || "").trim();
+    if (owner.indexOf(OWNER_REPORT_KEYWORD) === -1) return;
+
+    slips.push({
+      date:  formatVisitDate(d),
+      no:    String(r[C["伝票番号"]] || "").trim(),
+      owner: owner,
+      pet:   String(r[C["ペット名"]] || "").trim(),
+      staff: "担当者" in C ? String(r[C["担当者"]] || "").trim() : "",
+      card:  "カード決済" in C ? isChecked(r[C["カード決済"]]) : false,
+      total: "合計" in C ? (Number(r[C["合計"]]) || 0) : 0,
+      items: parseGigiSnapshot(r[C["技術料明細"]])
+    });
+  });
+
+  if (!slips.length) {
+    ui.alert(year + "年" + month + "月に " + OWNER_REPORT_LABEL + " の会計はありません。");
+    return;
+  }
+
+  // 伝票番号順に並べる（数値として比較。数字以外は末尾へ）
+  slips.sort(function (a, b) {
+    const na = Number(normInvoice(a.no)), nb = Number(normInvoice(b.no));
+    if (isNaN(na) && isNaN(nb)) return 0;
+    if (isNaN(na)) return 1;
+    if (isNaN(nb)) return -1;
+    return na - nb;
+  });
+
+  const newSS = createOwnerReportSpreadsheet(year, month);
+  const sheet = newSS.getActiveSheet();
+  sheet.setName(year + "年" + String(month).padStart(2, "0") + "月");
+
+  const headers = ["会計日", "伝票番号", "飼い主名", "ペット名", "担当者",
+                   "品名", "数量", "単価", "金額", "カード"];
+  sheet.appendRow(headers);
+  sheet.getRange(1, 1, 1, headers.length)
+       .setFontWeight("bold").setBackground("#1a5c3a").setFontColor("#ffffff");
+  sheet.setFrozenRows(1);
+
+  let rowNum = 2;
+  let itemCount = 0;
+  const out = [];
+  slips.forEach(function (s) {
+    if (!s.items.length) {
+      // 明細が空の伝票も、存在が分かるよう1行だけ残す
+      out.push([s.date, s.no, s.owner, s.pet, s.staff, "（明細なし）", "", "", "", s.card ? "✓" : ""]);
+      itemCount++;
+      return;
+    }
+    s.items.forEach(function (it, i) {
+      out.push([
+        i === 0 ? s.date : "",      // 同じ伝票の2行目以降は日付などを省いて見やすくする
+        i === 0 ? s.no : "",
+        i === 0 ? s.owner : "",
+        i === 0 ? s.pet : "",
+        i === 0 ? s.staff : "",
+        it.name, it.qty, it.price, it.amount,
+        (i === 0 && s.card) ? "✓" : ""
+      ]);
+      itemCount++;
+    });
+  });
+  sheet.getRange(rowNum, 1, out.length, headers.length).setValues(out);
+  const lastItemRow = rowNum + out.length - 1;
+  rowNum = lastItemRow + 1;
+
+  // ---- 合計 ----
+  sheet.appendRow(new Array(headers.length).fill(""));
+  rowNum++;
+  const sumRow = rowNum;
+  const amountCol = headers.indexOf("金額") + 1;
+  const cl = columnToLetter(amountCol);
+  const totalLine = new Array(headers.length).fill("");
+  totalLine[0] = "合計（税抜）";
+  totalLine[amountCol - 1] = "=SUM(" + cl + "2:" + cl + lastItemRow + ")";
+  sheet.appendRow(totalLine);
+  rowNum++;
+
+  // 販売記録の「合計」は税込。突き合わせできるよう並べて出す。
+  let cardTotal = 0, cashTotal = 0;
+  slips.forEach(function (s) { s.card ? (cardTotal += s.total) : (cashTotal += s.total); });
+  const grand = cardTotal + cashTotal;
+
+  [["合計（税込）", grand],
+   ["　うちカード決済", cardTotal],
+   ["　うち現金など", cashTotal]].forEach(function (pair) {
+    const line = new Array(headers.length).fill("");
+    line[0] = pair[0];
+    line[amountCol - 1] = pair[1];
+    sheet.appendRow(line);
+    rowNum++;
+  });
+
+  sheet.getRange(sumRow, 1, 4, headers.length).setFontWeight("bold");
+  sheet.getRange(sumRow, 1, 4, headers.length).setBackground("#e8f5e9");
+  sheet.getRange(2, amountCol, rowNum - 2, 1).setNumberFormat("#,##0");
+  sheet.getRange(2, headers.indexOf("単価") + 1, rowNum - 2, 1).setNumberFormat("#,##0");
+
+  sheet.setColumnWidth(1, 80);
+  sheet.setColumnWidth(2, 80);
+  sheet.setColumnWidth(3, 120);
+  sheet.setColumnWidth(4, 100);
+  sheet.setColumnWidth(5, 100);
+  sheet.setColumnWidth(6, 240);
+
+  ui.alert(
+    OWNER_REPORT_LABEL + " 明細を出力しました",
+    year + "年" + month + "月\n\n" +
+    "伝票数: " + slips.length + "件\n" +
+    "明細行: " + itemCount + "行\n" +
+    "合計（税込）: ¥" + grand.toLocaleString() + "\n" +
+    "　うちカード決済: ¥" + cardTotal.toLocaleString() + "\n\n" +
+    "マイドライブ > ガイア動物病院 > " + OWNER_REPORT_LABEL + " 明細",
+    ui.ButtonSet.OK
+  );
+}
+
+function createOwnerReportSpreadsheet(year, month) {
+  const fileName = OWNER_REPORT_LABEL + "_明細_" + year + "年" + String(month).padStart(2, "0") + "月";
+  const root = DriveApp.getRootFolder();
+  const gaiaFolder = getOrCreateFolder(root, "ガイア動物病院");
+  const folder = getOrCreateFolder(gaiaFolder, OWNER_REPORT_LABEL + " 明細");
+
+  const existing = folder.getFilesByName(fileName);
+  while (existing.hasNext()) existing.next().setTrashed(true);
+
+  const newSS = SpreadsheetApp.create(fileName);
+  const file = DriveApp.getFileById(newSS.getId());
+  folder.addFile(file);
+  DriveApp.getRootFolder().removeFile(file);
+  return newSS;
+}
+
 function createReportSpreadsheet(year, month) {
   const fileName = "技術料月次集計_" + year + "年" + String(month).padStart(2, "0") + "月";
 
