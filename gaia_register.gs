@@ -206,8 +206,17 @@ function searchRecords(params) {
   }
 
   // 新しい順（会計日降順→伝票番号降順）に並べ、上限で切る
+  // 伝票番号は書式次第で "000009"（文字列）にも 9（数値）にもなりうる。
+  // 文字列のまま比較すると "9" > "100" となり同一日の並びが崩れるため、
+  // 数値として比較する（数値にできないものは末尾へ）。
   hits.sort((a, b) => {
     if (a.visitDate !== b.visitDate) return a.visitDate < b.visitDate ? 1 : -1;
+    const na = Number(normInvoice(a.invoiceNo));
+    const nb = Number(normInvoice(b.invoiceNo));
+    const aNum = !isNaN(na), bNum = !isNaN(nb);
+    if (aNum && bNum) return nb - na;
+    if (aNum) return -1;
+    if (bNum) return 1;
     return a.invoiceNo < b.invoiceNo ? 1 : -1;
   });
 
@@ -383,18 +392,35 @@ function doPost(e) {
       if (name in C) sheet.getRange(newRow, C[name] + 1).insertCheckboxes();
     });
 
-    // ---- 技術料台帳への書き込み ----
-    writeGigiLedger(ss, now, visitDate, invoiceNo, vetStaffStr, gigiNonVaccine, gigiVaccine, staffCount);
+    // ---- 台帳への書き込み ----
+    // 販売記録への追加は既に終わっている。ここで例外を投げてクライアントに
+    // 失敗を返すと、スタッフが会計をやり直して同じ内容が別番号で二度記録される。
+    // 販売記録さえ残っていれば台帳は「整合チェック」で復元できるので、
+    // 台帳の失敗は警告として持ち帰り、会計自体は成功として返す。
+    const ledgerErrors = [];
+    try {
+      writeGigiLedger(ss, now, visitDate, invoiceNo, vetStaffStr, gigiNonVaccine, gigiVaccine, staffCount);
+    } catch (e1) {
+      ledgerErrors.push("技術料台帳: " + e1.message);
+    }
+    try {
+      writeVaccineLedger(ss, now, visitDate, invoiceNo, data.vaccineCounts);
+    } catch (e2) {
+      ledgerErrors.push("ワクチン台帳: " + e2.message);
+    }
 
-    // ---- ワクチン台帳への書き込み（案3b）----
-    writeVaccineLedger(ss, now, visitDate, invoiceNo, data.vaccineCounts);
-
-    return jsonResponse({ result: "success", invoiceNo: invoiceNo });
+    const res = { result: "success", invoiceNo: invoiceNo };
+    if (ledgerErrors.length) {
+      // クライアントは記録成功として扱いつつ、この警告をトーストで出す
+      res.warning = "台帳への記録に失敗しました（会計は記録済み）。整合チェックで復元してください。／ "
+                    + ledgerErrors.join(" / ");
+    }
+    return jsonResponse(res);
 
   } catch (err) {
     return jsonResponse({ result: "error", message: err.toString() });
   } finally {
-    try { lock.releaseLock(); } catch (e2) {}
+    try { lock.releaseLock(); } catch (eLock) {}
   }
 }
 

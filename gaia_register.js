@@ -1517,6 +1517,10 @@ function confirmFree() {
 
 // ===== カートの表示 =====
 function renderCart() {
+  // 記録済みロックの解除。カートに商品が入った＝次の会計が始まったとみなす。
+  // 追加経路（タイル・モーダル各種・返品）が多いので、全経路が通るここで面倒を見る。
+  if (recordedInvoiceNo && state.cart.length > 0) clearRecordedLock();
+
   const list = document.getElementById("cartList");
   if (state.cart.length === 0) {
     list.innerHTML = `<div class="cart-empty">商品タイルをタップして<br>診療内容を追加してください</div>`;
@@ -1811,9 +1815,24 @@ function renderReceiptHtml(forPrint, invoiceNo, isCopy) {
 //   ・さらに保険として30秒タイマーで強制復帰（通信が無反応のまま固まった場合でも
 //     ボタンが永久に押せなくなる事故を防ぐ。正常時は finally が先に復帰させるので無害）
 //   ※サーバ側の重複検出（A-2）は導入しない方針。二重記録は手動チェック運用。
+//
+// 【記録済みロック（同じ会計が別番号で二度記録された事故への対策）】
+//   window.print() は印刷ダイアログを開いた直後に処理を返すため、以前は
+//   ダイアログを操作している最中にボタンが復帰し、画面にはカートの内容も
+//   残って見えていた。印刷がうまくいかず「記録されていない」と思って
+//   押し直すと、同じ内容が別番号で二度記録されてしまう。
+//   対策として、記録に成功した時点で
+//     ・先にカートを片付けてから印刷を呼ぶ（押し直す対象を無くす）
+//     ・ボタンは「✓ 記録済み」表示のまま押せない状態を維持する
+//     ・次の会計をカートに入れた時点で自動的に復帰する
+//   という流れにした。同じ明細をもう一度印刷したいだけなら、printArea の
+//   内容は残っているのでブラウザの印刷機能をそのまま使えばよい。
 
 let isPrinting = false;          // 処理中フラグ（再入ブロック用）
 let printBtnInsuranceTimer = null; // 強制復帰の保険タイマー
+let printAbortCtrl = null;       // 進行中の送信を打ち切るための AbortController
+// 記録が完了した会計の伝票番号。カートを空にするまでボタンを押せなくして二重記録を防ぐ。
+let recordedInvoiceNo = null;
 
 // 印刷＋記録ボタンの処理中表示を切り替える
 function setPrintBtnBusy(busy) {
@@ -1832,24 +1851,61 @@ function setPrintBtnBusy(busy) {
   }
 }
 
+// 記録済み表示に切り替える（押せない状態を保ったまま、理由が分かるようにする）
+function setPrintBtnRecorded(invoiceNo) {
+  const btn = document.getElementById("printBtn");
+  if (!btn) return;
+  if (!btn.dataset.defaultHtml) btn.dataset.defaultHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.classList.remove("btn-busy");
+  btn.classList.add("btn-recorded");
+  btn.innerHTML = "✓ 記録済み No." + invoiceNo;
+}
+
+// 記録済みロックを解除して通常表示に戻す（次の会計を入力し始めたときに呼ぶ）
+function clearRecordedLock() {
+  if (!recordedInvoiceNo) return;
+  recordedInvoiceNo = null;
+  const btn = document.getElementById("printBtn");
+  if (!btn) return;
+  btn.classList.remove("btn-recorded");
+  btn.disabled = false;
+  if (btn.dataset.defaultHtml) btn.innerHTML = btn.dataset.defaultHtml;
+}
+
 // 処理中状態を解除（フラグ・ボタン・保険タイマーをまとめて復帰）
 function releasePrintLock() {
   isPrinting = false;
-  setPrintBtnBusy(false);
+  // 記録済みの会計が残っている間は「記録済み」表示を保つ（通常表示に戻さない）
+  if (recordedInvoiceNo) {
+    setPrintBtnRecorded(recordedInvoiceNo);
+  } else {
+    setPrintBtnBusy(false);
+  }
   if (printBtnInsuranceTimer) {
     clearTimeout(printBtnInsuranceTimer);
     printBtnInsuranceTimer = null;
   }
+  printAbortCtrl = null;
 }
 
 async function doPrint() {
   // ---- 0. 二度押しブロック ----
   if (isPrinting) return;  // 処理中の再タップは無視（disabled前の一瞬の連打もここで弾く）
+  // 記録済みの会計をもう一度送ろうとした場合も弾く
+  if (recordedInvoiceNo) {
+    showToast("この会計は記録済みです（No. " + recordedInvoiceNo + "）。新しい会計を入力してください", "error");
+    return;
+  }
   isPrinting = true;
   setPrintBtnBusy(true);
   // 保険：30秒経っても復帰していなければ強制復帰（固まり事故防止）
   // ※GASのコールドスタートで数秒かかることがあるため、短すぎる値にはしない
+  // 通信そのものも打ち切る。放置すると、復帰後に押し直した送信と
+  // 遅れて届いた元の送信の両方が記録され、二重記録になる。
+  printAbortCtrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
   printBtnInsuranceTimer = setTimeout(() => {
+    if (printAbortCtrl) { try { printAbortCtrl.abort(); } catch (e) {} }
     releasePrintLock();
     showToast("処理がタイムアウトしました。記録されたか売上記録シートを確認してください", "error");
   }, 30000);
@@ -1885,17 +1941,17 @@ async function doPrint() {
 
     showToast("スプシに記録しました（No. " + invoiceNo + "）");
 
-    // ---- 3. 印刷 ----
-    // 印刷内容は既に printArea に書き込み済みなので、
-    // この後にカートをクリアしても印刷物には影響しない。
-    window.print();
+    // ---- 3. 会計確定（カートクリア）----
+    // 印刷より先に片付ける。window.print() は印刷ダイアログを開いた直後に
+    // 処理を返すため、印刷を先にするとダイアログ操作中にカートの内容が
+    // 画面に残り、「記録されていない」と思って押し直す事故につながる。
+    // 印刷内容は既に printArea に書き込み済みなので、先に消しても印刷物に影響はない。
+    recordedInvoiceNo = invoiceNo;
+    clearCart();
+    closeReceipt();
 
-    // ---- 4. 会計確定（カートクリア） ----
-    // 印刷ダイアログを閉じた後に実行されるよう、わずかに遅延させる。
-    setTimeout(() => {
-      clearCart();
-      closeReceipt();
-    }, 300);
+    // ---- 4. 印刷 ----
+    window.print();
   } finally {
     // どの経路（成功・記録失敗・例外）でも必ずボタンを復帰させる
     releasePrintLock();
@@ -1948,15 +2004,26 @@ async function sendToGAS() {
   try {
     const res = await fetch(GAS_URL, {
       method: "POST",
-      body: JSON.stringify(data)
+      body: JSON.stringify(data),
+      // タイムアウト時にこの送信を打ち切れるようにする
+      signal: printAbortCtrl ? printAbortCtrl.signal : undefined
     });
     const json = await res.json();
     if (json.result === "success") {
+      // 台帳への書き込みだけ失敗した場合。会計自体は記録できているので
+      // 印刷は続行し、後で整合チェックが必要なことだけ知らせる。
+      if (json.warning) showToast(json.warning, "error");
       return { ok: true, invoiceNo: json.invoiceNo || "" };
     }
     throw new Error(json.message || "保存失敗");
   } catch (e) {
-    showToast("記録エラー：" + e.message, "error");
+    // タイムアウトで送信を打ち切った場合は専用の案内を出す
+    // （記録された可能性があるので、やり直す前に確認してほしい）
+    if (e && e.name === "AbortError") {
+      showToast("送信を中止しました。記録されたか売上記録シートを確認してください", "error");
+    } else {
+      showToast("記録エラー：" + e.message, "error");
+    }
     return { ok: false };
   }
 }

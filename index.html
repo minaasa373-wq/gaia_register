@@ -980,6 +980,14 @@ button { cursor: pointer; border: none; background: none; }
 
 /* ===== 印刷＋記録の処理中表示 ===== */
 .btn-busy { pointer-events: none; }  /* disabledに加えてタップ自体も透過させる保険 */
+/* 記録済みロック中の表示。押せないことが一目で分かるようにする。
+   次の会計をカートに入れると自動で通常表示へ戻る。 */
+.btn-recorded {
+  pointer-events: none;
+  background: #6b7f74 !important;
+  color: #ffffff !important;
+  opacity: 1 !important;
+}
 .btn-spinner {
   display: inline-block;
   width: 14px;
