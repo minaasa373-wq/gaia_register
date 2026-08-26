@@ -246,6 +246,14 @@ button { cursor: pointer; border: none; background: none; }
 }
 .status-dot.ok    { background: #2ea05a; }
 .status-dot.error { background: var(--warn); }
+/* 前回のマスタで動作中。通信は失敗しているが会計はできる状態 */
+.status-dot.warn  { background: #e0a800; }
+/* 読み込みに失敗しているときは、タップで原因を見られることを示す */
+.conn-clickable {
+  cursor: pointer;
+  text-decoration: underline dotted;
+  text-underline-offset: 3px;
+}
 
 /* ===== メインエリア ===== */
 .app-main {

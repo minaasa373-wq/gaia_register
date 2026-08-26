@@ -118,6 +118,12 @@ window.addEventListener("DOMContentLoaded", async () => {
     });
   });
 
+  // 接続状態の表示をタップすると、失敗時は原因と再読み込みの案内を出す
+  ["connText", "connStatus"].forEach(function (id) {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener("click", showConnDetail);
+  });
+
   // データ読み込み
   await loadMasterData();
 });
@@ -137,26 +143,155 @@ async function loadMasterData() {
     return;
   }
 
-  try {
-    const res = await fetch(GAS_URL + "?action=getMaster");
-    const data = await res.json();
-    if (data.result === "success") {
-      state.products = data.products || [];
-      state.staff = data.staff || [];
-      setConnStatus("ok", "接続済み");
-      setupUI();
-    } else {
-      throw new Error(data.message || "読み込み失敗");
+  let data = null;
+  let lastErr = null;
+
+  // 失敗しても間を置いてやり直す。
+  // GASの応答URL（user_content_key）は短時間で失効するため、取り直せば通ることが多い。
+  // 間隔を少しずつ広げて、混み合っているときに追い打ちをかけないようにする。
+  const RETRY_WAIT_MS = [700, 1500];
+  for (let attempt = 0; attempt <= RETRY_WAIT_MS.length; attempt++) {
+    try {
+      data = await fetchMasterOnce();
+      break;
+    } catch (e) {
+      lastErr = e;
+      if (attempt < RETRY_WAIT_MS.length) {
+        showLoading("読み込みに失敗しました。再試行中…（" + (attempt + 2) + "回目）");
+        await new Promise(function (r) { setTimeout(r, RETRY_WAIT_MS[attempt]); });
+      }
     }
-  } catch (e) {
+  }
+
+  if (!data) {
+    // ここに来るのは通信・サーバ側の失敗だけ。画面描画の失敗と混ざらないようにしている。
+    lastLoadError = describeLoadError(lastErr);
+
+    // 前回読めたマスタが残っていればそれを使う。
+    // デモデータは単価も技術料も実物と違うので、気づかず会計されると実害が出る。
+    const cache = loadMasterCache();
+    if (cache) {
+      const age = describeCacheAge(cache.savedAt);
+      state.products = cache.products;
+      state.staff = cache.staff || [];
+      lastLoadError.detail += "\n\n※ " + age + "に読み込んだマスタで動作しています。\n" +
+                              "その後にマスタを変更していれば反映されていません。";
+      setConnStatus("warn", "前回のマスタ");
+      safeSetupUI();
+      hideLoading();
+      showToast("接続できないため、" + age + "のマスタで動作中です（右上をタップで詳細）", "error");
+      return;
+    }
+
     setConnStatus("error", "接続エラー");
     state.products = getDemoProducts();
     state.staff = getDemoStaff();
-    setupUI();
-    showToast("マスタ読み込みエラー：" + e.message, "error");
-  } finally {
+    safeSetupUI();
     hideLoading();
+    showToast("マスタ読み込みエラー：" + lastLoadError.short + "（右上の接続エラーをタップで詳細）", "error");
+    return;
   }
+
+  state.products = data.products || [];
+  state.staff = data.staff || [];
+  lastLoadError = null;
+  saveMasterCache(data);          // 次に失敗したときの控えとして残す
+  setConnStatus("ok", "接続済み");
+  safeSetupUI();
+  hideLoading();
+}
+
+// ===== マスタのキャッシュ =====
+// 読み込みに失敗したとき、デモデータではなく前回のマスタで会計できるようにする。
+// デモデータのまま気づかず会計すると、単価も技術料も実際と違うものが記録されてしまう。
+const MASTER_CACHE_KEY = "gaia_master_cache_v1";
+
+function saveMasterCache(data) {
+  try {
+    localStorage.setItem(MASTER_CACHE_KEY, JSON.stringify({
+      savedAt: Date.now(),
+      products: data.products || [],
+      staff: data.staff || []
+    }));
+  } catch (e) {
+    // 保存できなくても動作に支障はないので黙って諦める
+    // （プライベートモードや容量超過でここに来ることがある）
+  }
+}
+
+function loadMasterCache() {
+  try {
+    const raw = localStorage.getItem(MASTER_CACHE_KEY);
+    if (!raw) return null;
+    const c = JSON.parse(raw);
+    if (!c || !Array.isArray(c.products) || !c.products.length) return null;
+    return c;
+  } catch (e) {
+    return null;
+  }
+}
+
+// 「3日前」のような表記にする（いつのマスタかを伝えるため）
+function describeCacheAge(savedAt) {
+  const ms = Date.now() - Number(savedAt || 0);
+  if (!isFinite(ms) || ms < 0) return "取得時期不明";
+  const min = Math.floor(ms / 60000);
+  if (min < 1) return "たった今";
+  if (min < 60) return min + "分前";
+  const hour = Math.floor(min / 60);
+  if (hour < 24) return hour + "時間前";
+  return Math.floor(hour / 24) + "日前";
+}
+
+// マスタ取得の1回分。
+// GASのウェブアプリは /exec から script.googleusercontent.com へリダイレクトして応答する。
+// リダイレクト先に付く user_content_key は短時間で失効するのに、ブラウザが
+// リダイレクトそのものをキャッシュしてしまうことがある。すると次回以降は
+// 失効済みのURLへ直行して 404 になり「接続エラー」に見える。
+// URLを毎回変え、キャッシュを使わない指定にして、これを避ける。
+async function fetchMasterOnce() {
+  const url = GAS_URL + "?action=getMaster&_=" + Date.now();
+  const res = await fetch(url, { cache: "no-store" });
+  if (!res.ok) {
+    throw new Error("HTTP " + res.status + (res.statusText ? " " + res.statusText : ""));
+  }
+  const data = await res.json();
+  if (data.result !== "success") {
+    throw new Error(data.message || "サーバが失敗を返しました");
+  }
+  return data;
+}
+
+// 画面描画の失敗を通信エラーと取り違えないよう、別で捕まえる
+function safeSetupUI() {
+  try {
+    setupUI();
+  } catch (e) {
+    showToast("画面の準備でエラー：" + e.message, "error");
+  }
+}
+
+// エラー内容を後から確認できる形にまとめる
+function describeLoadError(e) {
+  const name = (e && e.name) ? e.name : "Error";
+  const msg  = (e && e.message) ? e.message : String(e);
+  let hint = "";
+  if (/^HTTP 404/.test(msg)) {
+    hint = "GASの応答URLが失効しています。ページを再読み込みしてください。\n" +
+           "繰り返す場合はGASを新しいバージョンでデプロイし直してください。";
+  } else if (/Failed to fetch|NetworkError/i.test(msg)) {
+    hint = "ネットワークに繋がっていない可能性があります。Wi-Fiを確認してください。";
+  } else if (/Unexpected token|JSON/i.test(msg)) {
+    hint = "GASがJSON以外を返しています。デプロイのアクセス権を確認してください。";
+  } else if (/^HTTP 401|^HTTP 403/.test(msg)) {
+    hint = "GASのアクセス権が「全員」になっているか確認してください。";
+  }
+  return {
+    short: msg,
+    detail: "発生時刻: " + new Date().toLocaleString("ja-JP") + "\n" +
+            "種類: " + name + "\n" +
+            "内容: " + msg + (hint ? "\n\n" + hint : "")
+  };
 }
 
 // ===== UI初期化 =====
@@ -1833,6 +1968,8 @@ let printBtnInsuranceTimer = null; // 強制復帰の保険タイマー
 let printAbortCtrl = null;       // 進行中の送信を打ち切るための AbortController
 // 記録が完了した会計の伝票番号。カートを空にするまでボタンを押せなくして二重記録を防ぐ。
 let recordedInvoiceNo = null;
+// 直近のマスタ読み込み失敗の内容（右上の接続表示をタップすると見られる）
+let lastLoadError = null;
 
 // 印刷＋記録ボタンの処理中表示を切り替える
 function setPrintBtnBusy(busy) {
@@ -2005,9 +2142,13 @@ async function sendToGAS() {
     const res = await fetch(GAS_URL, {
       method: "POST",
       body: JSON.stringify(data),
+      cache: "no-store",
       // タイムアウト時にこの送信を打ち切れるようにする
       signal: printAbortCtrl ? printAbortCtrl.signal : undefined
     });
+    if (!res.ok) {
+      throw new Error("HTTP " + res.status + (res.statusText ? " " + res.statusText : ""));
+    }
     const json = await res.json();
     if (json.result === "success") {
       // 台帳への書き込みだけ失敗した場合。会計自体は記録できているので
@@ -2078,7 +2219,22 @@ function animalInitial(type) {
 
 function setConnStatus(level, text) {
   document.getElementById("connStatus").className = "status-dot " + level;
-  document.getElementById("connText").textContent = text;
+  const t = document.getElementById("connText");
+  t.textContent = text;
+  // エラー時は原因を後から確認できるようにする（現場のiPadでは開発者ツールが使えないため）
+  // 「前回のマスタ」で動作中も詳細を見られるようにする
+  t.classList.toggle("conn-clickable", level !== "ok" && !!lastLoadError);
+}
+
+// 接続エラーの詳細を表示して、その場で再読み込みできるようにする
+function showConnDetail() {
+  if (!lastLoadError) return;
+  const again = confirm(
+    "マスタの読み込みに失敗しました。\n\n" + lastLoadError.detail +
+    "\n\nもう一度読み込みますか？\n" +
+    "（カートの内容は消えません）"
+  );
+  if (again) loadMasterData();
 }
 function showLoading(text) {
   document.getElementById("loadingText").textContent = text || "読み込み中…";
