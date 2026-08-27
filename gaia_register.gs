@@ -104,7 +104,11 @@ function doGet(e) {
       const ss = SpreadsheetApp.getActiveSpreadsheet();
       return jsonResponse({
         result: "success",
-        products: getAllProducts(ss),
+        // cols＋配列形式で返す（転送量を約半分に減らすため）。
+        // 旧いクライアントは cols を見ないので、移行中は productsObjects も併送する
+        // …ということはせず、クライアント側で cols の有無を見て両対応にしている。
+        cols:     PRODUCT_FIELDS,
+        products: packProducts(getAllProducts(ss)),
         staff:    getStaff(ss)
       });
     }
@@ -517,6 +521,24 @@ function getAllProducts(ss) {
   const care  = getProductsFromSheet(ss, SHEET_PRODUCTS, GROUP_CARE);
   const drugs = getProductsFromSheet(ss, SHEET_DRUGS,    GROUP_DRUG);
   return care.concat(drugs);
+}
+
+// マスタ送信時の項目の並び。クライアント側で元のオブジェクトに戻すのに使う。
+// ここを変更したら、必ず cols も一緒に送られるので追従は不要。
+const PRODUCT_FIELDS = [
+  "id", "group", "category", "subcategory", "name", "modalGroup", "dose",
+  "unit", "qtyType", "price", "gigi", "staffPick", "favorite", "keywords",
+  "memo", "color", "order"
+];
+
+// 商品マスタを「列名1回＋値の配列」の形にする。
+// 1300件を超えると、項目名の繰り返しだけで全体の4割ほどを占める。
+// キーを捨てて配列で送ることで転送量がほぼ半減し、読み込みが安定・高速になる。
+// 例）{"id":1,"name":"初診",...} が 1300回 → ["id","name",...] ＋ [1,"初診",...]×1300
+function packProducts(products) {
+  return products.map(function (p) {
+    return PRODUCT_FIELDS.map(function (k) { return p[k]; });
+  });
 }
 
 // ===== マスタ取得（16列共通） =====

@@ -259,7 +259,25 @@ async function fetchMasterOnce() {
   if (data.result !== "success") {
     throw new Error(data.message || "サーバが失敗を返しました");
   }
+  data.products = unpackProducts(data);
   return data;
+}
+
+// サーバから来た商品マスタを、これまで通りのオブジェクトの配列に戻す。
+// 転送量を減らすため、サーバは「列名(cols)を1回＋各商品は値の配列」で返す。
+// cols が無ければ従来のオブジェクト形式とみなすので、GASとGitHub Pagesの
+// 更新タイミングがずれても、どちらの組み合わせでも動く。
+function unpackProducts(data) {
+  const rows = data.products || [];
+  const cols = data.cols;
+  if (!Array.isArray(cols) || !cols.length) return rows;   // 従来形式
+  return rows.map(function (row) {
+    // 念のため：配列でないものが混ざっていてもそのまま通す
+    if (!Array.isArray(row)) return row;
+    const o = {};
+    for (let i = 0; i < cols.length; i++) o[cols[i]] = row[i];
+    return o;
+  });
 }
 
 // 画面描画の失敗を通信エラーと取り違えないよう、別で捕まえる
