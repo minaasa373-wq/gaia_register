@@ -49,6 +49,20 @@ const FIX_COLOR     = "#f8bbd0";  // ピンク：販売記録の値に修正し�
 const RESTORE_COLOR = "#fff2b2";  // 黄　　：台帳に無かった行を復元した
 const ORPHAN_COLOR  = "#dcdcdc";  // グレー：販売記録に対応が無い（自動修正しない）
 
+// ===== 販売記録に付ける印の色 =====
+// どちらも「人が判断するための目印」であって、自動で消したり直したりはしない。
+// 塗る列を分けてあるので、同じ行に両方付いても潰し合わない。
+const FREE_INPUT_COLOR = "#ffe0b2";  // 薄オレンジ：明細セル。自由入力を使った会計
+const DUP_COLOR        = "#ffcdd2";  // 薄赤　　　：伝票番号セル。二重送信の疑い
+
+// ===== 二重送信の判定条件 =====
+// 飼い主名・ペット名・合計・明細が完全に一致し、かつ記録日時がこの分数以内に
+// 並んでいるものを「同じ会計が二度送られた」とみなす。
+// 実データ（2,534件）で窓を5分・30分・120分と変えても検出数は38組で動かず、
+// 窓を外すと56組に増えた。増えた18組は別日の同一処置＝正当な会計だったので、
+// 5分で十分に分離できている。
+const DUP_WINDOW_MINUTES = 5;
+
 // カード決済台帳の列
 const CARD_LEDGER_COLS = [
   "記録日時", "会計日", "伝票番号", "担当者", "飼い主名", "ペット名",
@@ -396,6 +410,17 @@ function doPost(e) {
       if (name in C) sheet.getRange(newRow, C[name] + 1).insertCheckboxes();
     });
 
+    // 自由入力を使った会計は「明細」セルに色を付ける。
+    // 月末の突合で「技術料の追記が要る項目か」を拾うための目印。
+    // 列が無い・古いクライアントで hasFreeInput が来ない場合は何もしない。
+    if (data.hasFreeInput === true && ("明細" in C)) {
+      try {
+        sheet.getRange(newRow, C["明細"] + 1).setBackground(FREE_INPUT_COLOR);
+      } catch (eColor) {
+        // 色は目印にすぎない。ここで失敗しても会計は成立させる。
+      }
+    }
+
     // ---- 台帳への書き込み ----
     // 販売記録への追加は既に終わっている。ここで例外を投げてクライアントに
     // 失敗を返すと、スタッフが会計をやり直して同じ内容が別番号で二度記録される。
@@ -688,6 +713,7 @@ function onOpen() {
     .createMenu("🏥 ガイア")
     .addItem("技術料台帳の整合チェック", "checkGigiLedger")
     .addItem("未チェック伝票の確認", "promptUncheckedRecords")
+    .addItem("二重送信チェック", "promptDuplicateCheck")
     .addSeparator()
     .addItem("月次集計を実行", "promptMonthlyReport")
     .addItem(OWNER_REPORT_LABEL + " 明細を出力", "promptOwnerReport")
@@ -1769,6 +1795,161 @@ function promptMonthlyReport() {
   }
 
   generateMonthlyGigiReport(year, month);
+}
+
+// ===== 二重送信チェック =====
+// 指定した月の販売記録を走査し、同じ会計が二度記録されたと思われる行の
+// 「伝票番号」セルを薄赤で塗る。行の削除は一切しない（人が判断する）。
+//
+// 判定は「飼い主名・ペット名・合計・明細がすべて一致し、記録日時が
+// DUP_WINDOW_MINUTES 以内に並んでいる」こと。明細まで一致を要求しているので、
+// 同じ患者が同日に別内容で二度会計しても引っかからない。
+//
+// 疑いのある組は両方の行を塗る。どちらを消すかは2行を見比べないと決められないため。
+function promptDuplicateCheck() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(
+    "二重送信チェック",
+    "対象年月を入力してください（例: 2026-08）",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+
+  const input = res.getResponseText().trim();
+  const m = input.match(/^(\d{4})-(\d{1,2})$/);
+  if (!m) {
+    ui.alert("形式が正しくありません。例: 2026-08");
+    return;
+  }
+  checkDuplicateRecords(parseInt(m[1], 10), parseInt(m[2], 10));
+}
+
+function checkDuplicateRecords(year, month) {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+
+  const rec = ss.getSheetByName(SHEET_RECORDS);
+  if (!rec || rec.getLastRow() < 2) {
+    ui.alert("販売記録にデータがありません。");
+    return;
+  }
+  const cm = buildColMap(rec, ["記録日時", "会計日", "伝票番号", "飼い主名", "ペット名", "明細", "合計"]);
+  const C = cm.idx;
+
+  const values = rec.getRange(2, 1, rec.getLastRow() - 1, cm.count).getValues();
+
+  // 判定は全件で行う。対象月だけを切り出してから比較すると、月をまたいだ
+  // 二重送信を取りこぼすため。
+  //   例）同じ晩に2分以内で3連続送信された伝票1353/1354/1355 のうち、
+  //       1353 だけ会計日が翌月になっていた（日付ピッカーの入れ間違い）。
+  //       月で切ると 1353↔1354 の組が別々の月に分かれて検出できない。
+  // シート全体は元々1回で読み込んでいるので、読み取り回数は増えない。
+  const all = [];
+  let targetCount = 0;
+  values.forEach(function (row, i) {
+    const vd = parseVisitDate(row[C["会計日"]]);
+    if (!vd) return;
+    const inMonth = (vd.getFullYear() === year && vd.getMonth() + 1 === month);
+    if (inMonth) targetCount++;
+    all.push({
+      rowNo: i + 2,                                   // シート上の行番号
+      inMonth: inMonth,
+      visit: vd,
+      stamp: row[C["記録日時"]],
+      invoice: normInvoice(row[C["伝票番号"]]),
+      owner: String(row[C["飼い主名"]] || "").trim(),
+      pet: String(row[C["ペット名"]] || "").trim(),
+      detail: String(row[C["明細"]] || "").trim(),
+      total: Number(row[C["合計"]]) || 0
+    });
+  });
+
+  if (targetCount === 0) {
+    ui.alert(year + "年" + month + "月の記録が見つかりませんでした。");
+    return;
+  }
+
+  // 飼い主・ペット・合計・明細が同じものをまとめる
+  const groups = {};
+  all.forEach(function (r) {
+    const key = [r.owner, r.pet, r.total, r.detail].join("\u0001");
+    if (!groups[key]) groups[key] = [];
+    groups[key].push(r);
+  });
+
+  const hitRows = {};   // 塗る行番号（重複して塗らないよう連想配列で持つ）
+  const pairs = [];     // 報告用
+
+  Object.keys(groups).forEach(function (key) {
+    const list = groups[key];
+    if (list.length < 2) return;
+
+    // 記録日時の昇順に並べ、隣り合うものだけ比較する
+    list.sort(function (a, b) {
+      const ta = (a.stamp instanceof Date) ? a.stamp.getTime() : 0;
+      const tb = (b.stamp instanceof Date) ? b.stamp.getTime() : 0;
+      return ta - tb;
+    });
+
+    for (let i = 1; i < list.length; i++) {
+      const prev = list[i - 1];
+      const cur  = list[i];
+      if (!(prev.stamp instanceof Date) || !(cur.stamp instanceof Date)) continue;
+
+      const diffMin = Math.abs(cur.stamp.getTime() - prev.stamp.getTime()) / 60000;
+      if (diffMin > DUP_WINDOW_MINUTES) continue;
+
+      // どちらか一方でも対象月にあれば取り上げる。
+      // 相方が別の月にいても両方塗る（片方だけ赤いと判断できないため）。
+      if (!prev.inMonth && !cur.inMonth) continue;
+
+      hitRows[prev.rowNo] = true;
+      hitRows[cur.rowNo]  = true;
+      pairs.push({
+        a: prev.invoice, b: cur.invoice,
+        owner: prev.owner, pet: prev.pet,
+        total: prev.total, diff: diffMin,
+        // 二重送信なのに会計日が違う＝日付の入れ間違いも同時に起きている
+        crossMonth: (prev.visit.getMonth() !== cur.visit.getMonth() ||
+                     prev.visit.getFullYear() !== cur.visit.getFullYear())
+      });
+    }
+  });
+
+  if (pairs.length === 0) {
+    ui.alert(
+      "二重送信チェック",
+      year + "年" + month + "月：" + targetCount + "件を確認しました。\n" +
+      "二重送信の疑いがある会計は見つかりませんでした。",
+      ui.ButtonSet.OK
+    );
+    return;
+  }
+
+  // 該当行の伝票番号セルを塗る
+  const invCol = C["伝票番号"] + 1;
+  Object.keys(hitRows).forEach(function (rowNo) {
+    rec.getRange(Number(rowNo), invCol).setBackground(DUP_COLOR);
+  });
+
+  // 報告（件数が多いときは先頭だけ出す）
+  let msg = year + "年" + month + "月：" + targetCount + "件を確認しました。\n\n" +
+            "二重送信の疑い " + pairs.length + "組（" + Object.keys(hitRows).length + "行）を\n" +
+            "伝票番号セルの薄赤で塗りました。\n\n";
+  const shown = pairs.slice(0, UNCHECKED_LIST_MAX);
+  shown.forEach(function (p) {
+    msg += "・伝票 " + p.a + " / " + p.b + "　" + p.owner + " " + p.pet +
+           "　¥" + p.total.toLocaleString() + "（差 " + p.diff.toFixed(1) + "分）" +
+           (p.crossMonth ? " ※会計日が違います" : "") + "\n";
+  });
+  if (pairs.length > shown.length) {
+    msg += "…ほか " + (pairs.length - shown.length) + "組\n";
+  }
+  msg += "\n内容は自動で消していません。紙の控えと突き合わせて、\n" +
+         "不要な行はご自身で削除してください。\n" +
+         "削除後は「技術料台帳の整合チェック」を実行してください。";
+
+  ui.alert("二重送信チェック", msg, ui.ButtonSet.OK);
 }
 
 // ===== ユーティリティ =====
