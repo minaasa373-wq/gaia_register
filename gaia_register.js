@@ -701,6 +701,17 @@ function hasFormula(p) {
 function hasGigiSame(p) {
   return (p.memo || "").includes("gigi:same");
 }
+// 技術料固定判定（メモ列に gigi:fixed があれば「技術料列の値で固定」品目）
+// 通常は技術料を単価に比例させるが、この印がある品目は価格がいくらになっても
+// マスタの技術料列の値をそのまま使う。
+// 例）プロハート注：メモ "formula:weight*350+1000 gigi:fixed" / 技術料 2500
+//     体重4kg → 単価2,400円・技術料2,500円
+//     体重42kg→ 単価15,700円・技術料2,500円
+// 体重の重い犬でも技術料は据え置きという運用のため、単価を上回っても補正しない。
+// gigi:same を含む文字列とは別物（includes での取り違えは起きない）。
+function hasGigiFixed(p) {
+  return (p.memo || "").includes("gigi:fixed");
+}
 // 民宿品目判定（メモ列に stay があれば「頭数×泊数」入力品目）
 function hasStay(p) {
   return (p.memo || "").includes("stay");
@@ -920,6 +931,8 @@ function calcItemGigi(item) {
   if (item.isReturn) return 0;                             // 返品行は技術料0
   if (item.isNurseMark) return 0;                          // 看護師＊印は技術料0
   if (!item.gigi || item.gigi === 0) return 0;             // 技術料なし
+  // gigi:fixed：単価がいくらでも技術料は据え置き。編集パネルで単価を手修正しても動かない。
+  if (item.isGigiFixed) return Math.floor(item.gigi * item.qty);
   if (!item.masterPrice || item.masterPrice === 0) return 0; // ゼロ除算回避（体重連動式等）
   return Math.floor(item.gigi * item.qty * (item.price / item.masterPrice));
 }
@@ -1308,6 +1321,8 @@ function openStaffPickModalForPricedItem(product, price, isGigiSame) {
 // 金額確定済み品目をカートに積む（gigi:same / formula: 共通）
 // staffRole が "nurse" のときは技術料0＋＊印になる（calcItemGigi 側で処理）。
 function pushPricedCartItem(product, price, staffRole, isGigiSame) {
+  // gigi:fixed の品目は技術料を算出価格で上書きしない。マスタの技術料列を使う。
+  const fixedGigi = hasGigiFixed(product);
   const item = {
     itemId: itemIdCounter++,
     productId: product.id,
@@ -1324,9 +1339,10 @@ function pushPricedCartItem(product, price, staffRole, isGigiSame) {
     staffRole: staffRole || null,
     isNurseMark: staffRole === "nurse",
     masterPrice: price,
-    gigi: price
+    gigi: fixedGigi ? (Number(product.gigi) || 0) : price
   };
   if (isGigiSame) item.isGigiSame = true;
+  if (fixedGigi) item.isGigiFixed = true;
   state.cart.push(finalizeNewCartItem(item));
 }
 
@@ -2153,7 +2169,12 @@ async function sendToGAS() {
     gigiVaccine: calcVaccineGigi(),
     gigiSnapshot: buildGigiSnapshot(),
     // ワクチン種類別件数（案3b）
-    vaccineCounts: buildVaccineCounts()
+    vaccineCounts: buildVaccineCounts(),
+    // 自由入力（マスタにない項目）を使ったか。
+    // 使っていれば販売記録の「明細」セルに色が付き、月末の突合で
+    // 「技術料の追記が要るか」をひと目で拾えるようにする。
+    // 粉薬モーダル・返品は別フローなので対象外（isFree が立たない）。
+    hasFreeInput: state.cart.some(it => it.isFree === true)
   };
 
   try {
