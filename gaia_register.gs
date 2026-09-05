@@ -54,6 +54,7 @@ const ORPHAN_COLOR  = "#dcdcdc";  // グレー：販売記録に対応が無い�
 // 塗る列を分けてあるので、同じ行に両方付いても潰し合わない。
 const FREE_INPUT_COLOR = "#ffe0b2";  // 薄オレンジ：明細セル。自由入力を使った会計
 const DUP_COLOR        = "#ffcdd2";  // 薄赤　　　：伝票番号セル。二重送信の疑い
+const UNCHECKED_COLOR  = "#b3e5fc";  // 水色　　　：確認済み／カード決済セル。未チェックの会計
 
 // ===== 二重送信の判定条件 =====
 // 飼い主名・ペット名・合計・明細が完全に一致し、かつ記録日時がこの分数以内に
@@ -940,11 +941,15 @@ function getUncheckedRecords(ss, year, month) {
   const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues();
   const nos = {};
   const list = [];
-  rows.forEach(function (r) {
+  const checkedRows = [];      // チェック済みの行番号（色を消す対象）
+  rows.forEach(function (r, i) {
+    const sheetRow = i + 2;
     const d = parseVisitDate(r[C["会計日"]]);
     if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
-    if (isChecked(r[C["カード決済"]])) return;   // カードは別ルートで処理される
-    if (isChecked(r[C["確認済み"]])) return;     // 確認済みなら対象外
+    if (isChecked(r[C["カード決済"]]) || isChecked(r[C["確認済み"]])) {
+      checkedRows.push(sheetRow);   // カードは別ルート／確認済みは対象外。どちらも色は消す
+      return;
+    }
 
     // 照合は正規化した番号で行うが、画面に出すのはシート上の見た目のまま
     // （normInvoice は先頭ゼロを落とすので "0004" が "4" と表示されてしまう）
@@ -953,9 +958,28 @@ function getUncheckedRecords(ss, year, month) {
     if (!key) return;                            // 伝票番号が無い行は照合できない
     if (nos[key]) return;                        // 同一伝票の複数行は1件として数える
     nos[key] = true;
-    list.push({ no: raw, key: key, date: formatVisitDate(d) });
+    list.push({ no: raw, key: key, date: formatVisitDate(d), sheetRow: sheetRow });
   });
-  return { nos: nos, rows: list, count: list.length };
+  return { nos: nos, rows: list, count: list.length, checkedRows: checkedRows, cols: C };
+}
+
+// 行番号の配列を A1 記法の範囲リストに変換する（連続する行はまとめる）。
+// 1セルずつ setBackground すると件数分の通信が発生してしまうため、
+// getRangeList で一度に処理できる形にする。
+function rowsToA1(rowNums, col) {
+  if (!rowNums.length) return [];
+  const letter = columnToLetter(col);
+  const sorted = rowNums.slice().sort(function (a, b) { return a - b; });
+  const out = [];
+  let i = 0;
+  while (i < sorted.length) {
+    let j = i;
+    while (j + 1 < sorted.length && sorted[j + 1] === sorted[j] + 1) j++;
+    out.push(i === j ? (letter + sorted[i])
+                     : (letter + sorted[i] + ":" + letter + sorted[j]));
+    i = j + 1;
+  }
+  return out;
 }
 
 // 未チェック件数をダイアログで知らせる（メニューから実行。修正はしない）
@@ -977,10 +1001,40 @@ function promptUncheckedRecords() {
   const month = parseInt(m[2], 10);
 
   const un = getUncheckedRecords(SpreadsheetApp.getActiveSpreadsheet(), year, month);
+
+  // 「確認済み」「カード決済」セルの色を付け直す。
+  //   未チェックの行 → 水色にする（どこを見ればいいか一目で分かるように）
+  //   チェック済みの行 → 色を消す（処理が済んだ行に印が残らないように）
+  // 実行するたびに現状へ合わせ直すので、何度実行しても結果は同じになる。
+  let painted = 0, cleared = 0;
+  const rec = SpreadsheetApp.getActiveSpreadsheet().getSheetByName(SHEET_RECORDS);
+  if (rec && un.cols && ("確認済み" in un.cols) && ("カード決済" in un.cols)) {
+    try {
+      const colCheck = un.cols["確認済み"] + 1;
+      const colCard  = un.cols["カード決済"] + 1;
+      const uncheckedRows = un.rows.map(function (r) { return r.sheetRow; });
+
+      // 「確認済み」「カード決済」2列分の範囲をまとめ、それぞれ1回の呼び出しで処理する
+      const toPaint = rowsToA1(uncheckedRows, colCheck)
+                        .concat(rowsToA1(uncheckedRows, colCard));
+      const toClear = rowsToA1(un.checkedRows, colCheck)
+                        .concat(rowsToA1(un.checkedRows, colCard));
+
+      if (toPaint.length) rec.getRangeList(toPaint).setBackground(UNCHECKED_COLOR);
+      if (toClear.length) rec.getRangeList(toClear).setBackground(null);
+
+      painted = uncheckedRows.length;
+      cleared = un.checkedRows.length;
+    } catch (e) {
+      // 色は目印にすぎない。失敗しても件数の報告は行う。
+    }
+  }
+
   if (un.count === 0) {
     ui.alert("未チェック伝票の確認",
       year + "年" + month + "月の会計は、すべて「確認済み」か「カード決済」に\n" +
-      "チェックが入っています。", ui.ButtonSet.OK);
+      "チェックが入っています。\n\n" +
+      "水色の印が残っていた " + cleared + "行は色を消しました。", ui.ButtonSet.OK);
     return;
   }
 
@@ -988,7 +1042,9 @@ function promptUncheckedRecords() {
   let msg =
     year + "年" + month + "月の会計のうち、「確認済み」にも「カード決済」にも\n" +
     "チェックが無い伝票が " + un.count + "件 あります。\n\n" +
-    "このまま月次集計を実行すると、これらは集計に含まれません。\n\n" +
+    "このまま月次集計を実行すると、これらは集計に含まれません。\n" +
+    "該当行の「確認済み」「カード決済」セルを水色にしました。\n" +
+    "（チェックを入れてからもう一度実行すると色が消えます）\n\n" +
     shown.map(function (r) { return "  " + r.date + "  伝票 " + r.no; }).join("\n");
   if (un.count > shown.length) {
     msg += "\n  … ほか " + (un.count - shown.length) + "件";
@@ -1042,9 +1098,24 @@ function markCardCarryover(ss, carryRows, year, month) {
   if (!("集計済み" in LC)) return;
 
   const tag = year + "-" + ("0" + month).slice(-2);   // 例：2026-08
-  carryRows.forEach(function (c) {
-    ledger.getRange(c.sheetRow, LC["集計済み"] + 1).setValue(tag);
-  });
+
+  // 1セルずつ setValue すると件数分の通信が発生し、繰越が数百件あると
+  // 実行時間の上限に効いてくる。行番号順に並べ、連続している範囲は
+  // まとめて書き込む。カード決済台帳は伝票番号順に並んでいるので、
+  // 実際にはほぼ1回の書き込みで済む。
+  const rowsSorted = carryRows.slice().sort(function (a, b) { return a.sheetRow - b.sheetRow; });
+  const col = LC["集計済み"] + 1;
+  let i = 0;
+  while (i < rowsSorted.length) {
+    let j = i;
+    while (j + 1 < rowsSorted.length &&
+           rowsSorted[j + 1].sheetRow === rowsSorted[j].sheetRow + 1) j++;
+    const n = j - i + 1;
+    const block = [];
+    for (let k = 0; k < n; k++) block.push([tag]);
+    ledger.getRange(rowsSorted[i].sheetRow, col, n, 1).setValues(block);
+    i = j + 1;
+  }
 }
 
 // ===== カード決済台帳への転記 =====
@@ -1112,6 +1183,25 @@ function writeCardLedger(ss, year, month) {
     }
   }
   return toAdd.length;
+}
+
+// setValues は appendRow と違って行を自動追加しない。
+// 新規スプレッドシートは既定1000行なので、それを超える件数を書く前に広げておく。
+function ensureSheetRows(sheet, needRows) {
+  const max = sheet.getMaxRows();
+  if (needRows > max) sheet.insertRowsAfter(max, needRows - max);
+}
+
+// 指定した行にそのまま書き込む。
+// appendRow は「中身のある最終行の次」に書くため、空文字だけの行を渡しても
+// 行が進まず、以降の行番号が1つずつ実際とずれてしまう。
+// 集計表は行番号を使って罫線や数式の参照先を決めているので、
+// 位置を appendRow 任せにせず、必ず行番号を指定して書く。
+function putRow(sheet, rowNum, arr, width) {
+  const row = arr.slice(0, width);
+  while (row.length < width) row.push("");
+  ensureSheetRows(sheet, rowNum);
+  sheet.getRange(rowNum, 1, 1, width).setValues([row]);
 }
 
 // ===== 月次集計 =====
@@ -1213,7 +1303,7 @@ function generateMonthlyGigiReport(year, month) {
   headers.push("複数担当");
   headers.push("担当者");     // 複数担当に入った分だけ、誰の分かを表示する
   headers.push("ワクチン");
-  report.appendRow(headers);
+  putRow(report, 1, headers, headers.length);
 
   const hRange = report.getRange(1, 1, 1, headers.length);
   hRange.setBackground("#1a5c3a");
@@ -1253,6 +1343,9 @@ function generateMonthlyGigiReport(year, month) {
     }
   }
 
+  // appendRow は1行ごとにサーバーと通信するため、件数が増えると
+  // 実行時間の上限（6分）に届いてしまう。配列に貯めて一度に書き込む。
+  const bodyRows = [];
   filtered.forEach(row => {
     const invoiceNo    = row[2] || "";
     const vetName      = String(row[3] || "").trim();
@@ -1266,9 +1359,14 @@ function generateMonthlyGigiReport(year, month) {
 
     fillGigiCells(outRow, vetName, normalGigi, vaccineGigi, staffCountVal);
 
-    report.appendRow(outRow);
-    rowNum++;
+    bodyRows.push(outRow);
   });
+
+  if (bodyRows.length) {
+    ensureSheetRows(report, rowNum + bodyRows.length);
+    report.getRange(rowNum, 1, bodyRows.length, headers.length).setValues(bodyRows);
+    rowNum += bodyRows.length;
+  }
 
   const currentEndRow = rowNum - 1;   // 当月分の最終行
 
@@ -1278,21 +1376,26 @@ function generateMonthlyGigiReport(year, month) {
   if (carry.count > 0) {
     const sepRow = new Array(headers.length).fill("");
     sepRow[0] = "繰越（カード入金分）";
-    report.appendRow(sepRow);
+    putRow(report, rowNum, sepRow, headers.length);
     const sepRange = report.getRange(rowNum, 1, 1, headers.length);
     sepRange.setFontWeight("bold");
     sepRange.setBackground("#e3f2fd");
     rowNum++;
 
     carryStartRow = rowNum;
+    const carryBody = [];
     carry.rows.forEach(function (c) {
       const outRow = new Array(headers.length).fill("");
       outRow[0] = c.invoiceNo;
       outRow[1] = formatVisitDate(c.visitDate);
       fillGigiCells(outRow, c.vet, c.gigiNon, c.gigiVac, c.staffCount);
-      report.appendRow(outRow);
-      rowNum++;
+      carryBody.push(outRow);
     });
+    if (carryBody.length) {
+      ensureSheetRows(report, rowNum + carryBody.length);
+      report.getRange(rowNum, 1, carryBody.length, headers.length).setValues(carryBody);
+      rowNum += carryBody.length;
+    }
     carryEndRow = rowNum - 1;
 
     // 繰越行は薄い青で塗り、当月分と見分けられるようにする
@@ -1313,7 +1416,7 @@ function generateMonthlyGigiReport(year, month) {
       const cl = columnToLetter(c);
       curRow.push(filtered.length ? "=SUM(" + cl + "2:" + cl + currentEndRow + ")" : 0);
     }
-    report.appendRow(curRow);
+    putRow(report, rowNum, curRow, headers.length);
     currentSubRowNum = rowNum;
     report.getRange(rowNum, 1, 1, headers.length).setBackground("#f1f8e9");
     rowNum++;
@@ -1325,7 +1428,7 @@ function generateMonthlyGigiReport(year, month) {
       const cl = columnToLetter(c);
       carRow.push("=SUM(" + cl + carryStartRow + ":" + cl + carryEndRow + ")");
     }
-    report.appendRow(carRow);
+    putRow(report, rowNum, carRow, headers.length);
     carrySubRowNum = rowNum;
     report.getRange(rowNum, 1, 1, headers.length).setBackground("#e3f2fd");
     rowNum++;
@@ -1337,14 +1440,14 @@ function generateMonthlyGigiReport(year, month) {
   // 「複数担当」列の金額は歩合計算に使っていないため、二重計上にはならない。
   const beforeManualRow = rowNum - 1;   // 明細（＋小計）の最終行
 
-  report.appendRow(new Array(headers.length).fill(""));   // 明細と切り離す空行
+  // 空行は書き込まず行番号だけ進める（appendRow だと行が進まずズレる）
   rowNum++;
 
   const manualStartRow = rowNum;
   for (let i = 0; i < MANUAL_ALLOC_ROWS; i++) {
     const mRow = new Array(headers.length).fill("");
     if (i === 0) mRow[0] = "手動配分";
-    report.appendRow(mRow);
+    putRow(report, rowNum, mRow, headers.length);
     rowNum++;
   }
   const manualEndRow = rowNum - 1;      // このブロックの最終行＝ワクチン頭割りの行
@@ -1384,7 +1487,7 @@ function generateMonthlyGigiReport(year, month) {
       totalRow.push("=SUM(" + colLetter + "2:" + colLetter + beforeManualRow + ")+" + manualSum);
     }
   }
-  report.appendRow(totalRow);
+  putRow(report, rowNum, totalRow, headers.length);
   const totalRowNum = rowNum;
 
   const totalRange = report.getRange(totalRowNum, 1, 1, headers.length);
@@ -1401,7 +1504,7 @@ function generateMonthlyGigiReport(year, month) {
   rateRow.push(""); // 複数担当
   rateRow.push(""); // 担当者
   rateRow.push("÷" + VACCINE_SPLIT_COUNT); // ワクチン
-  report.appendRow(rateRow);
+  putRow(report, rowNum, rateRow, headers.length);
   const rateRowNum = rowNum;
 
   // 歩合率行のスタイル
@@ -1428,9 +1531,8 @@ function generateMonthlyGigiReport(year, month) {
   // ワクチン÷5
   const vaccineColLetter = columnToLetter(vaccineCol);
   calcRow.push("=" + vaccineColLetter + totalRowNum + "/" + VACCINE_SPLIT_COUNT);
-  report.appendRow(calcRow);
+  putRow(report, rowNum, calcRow, headers.length);
   const calcRowNum = rowNum;
-
   // 算出金額行のスタイル
   const calcRange = report.getRange(calcRowNum, 3, 1, headers.length - 2);
   calcRange.setFontWeight("bold");
