@@ -610,7 +610,7 @@ button { cursor: pointer; border: none; background: none; }
   padding: 8px 12px;
   margin-bottom: 10px;
 }
-.btn-fav-toggle {
+.btn-group-disc {
   padding: 7px 14px;
   background: var(--surface);
   border: 1px solid var(--border);
@@ -621,12 +621,7 @@ button { cursor: pointer; border: none; background: none; }
   white-space: nowrap;
   transition: all 0.15s;
 }
-.btn-fav-toggle.active {
-  background: #FFF7E0;
-  border-color: #E6A817;
-  color: #B07D00;
-}
-.btn-fav-toggle:hover { border-color: #E6A817; }
+.btn-group-disc:hover { border-color: #3E7CB1; color: #3E7CB1; }
 
 /* 返品モードトグルボタン */
 .btn-return-mode {
@@ -780,14 +775,6 @@ button { cursor: pointer; border: none; background: none; }
   right: 6px;
   font-size: 10px;
   color: var(--muted);
-}
-.tile-fav {
-  position: absolute;
-  top: 3px;
-  left: 7px;
-  font-size: 11px;
-  color: #E6A817;
-  z-index: 1;
 }
 .tile-staffpick {
   position: absolute;
@@ -1525,7 +1512,7 @@ button { cursor: pointer; border: none; background: none; }
         <button class="btn-powder" onclick="openPowderModal()">＋ 粉薬を追加</button>
         <button class="btn-free" onclick="openFreeModal()">＋ 自由入力</button>
         <button class="btn-return-mode" id="returnModeBtn" onclick="toggleReturnMode()">↩ 返品</button>
-        <button class="btn-fav-toggle" id="favToggleBtn" onclick="toggleFavorites()">★ お気に入り</button>
+        <button class="btn-group-disc" onclick="openGroupDiscModal()">％ 団割</button>
       </div>
       <div class="category-tabs" id="categoryTabs"></div>
       <div class="product-grid" id="productGrid"></div>
@@ -1662,6 +1649,30 @@ button { cursor: pointer; border: none; background: none; }
     <div class="modal-footer">
       <button class="btn-cancel" onclick="closeFreeModal()">キャンセル</button>
       <button class="btn-confirm" onclick="confirmFree()">注文に追加</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 団体割引モーダル ============ -->
+<div class="modal-overlay hidden" id="groupDiscModal">
+  <div class="modal">
+    <div class="modal-header">
+      <span class="modal-title">団体割引</span>
+      <button class="modal-close" onclick="closeGroupDiscModal()">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="free-info">割引する金額を入力してください。カートにマイナス金額で追加されます。</div>
+      <div class="formula-field">
+        <label>割引額（円・税抜）</label>
+        <input type="number" id="groupDiscAmount" min="0" step="1" placeholder="例：1000" oninput="updateGroupDiscTotal()">
+      </div>
+      <div class="formula-result">
+        カートに追加される金額：<strong id="groupDiscDisp">¥0</strong>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-cancel" onclick="closeGroupDiscModal()">キャンセル</button>
+      <button class="btn-confirm" onclick="confirmGroupDisc()">注文に追加</button>
     </div>
   </div>
 </div>

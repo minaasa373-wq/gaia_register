@@ -18,7 +18,6 @@ const state = {
   activeCategory: "全て",
   searchQuery: "",
   currentDose: null,    // 用量モーダル選択中
-  showFavoritesOnly: false, // お気に入り優先表示（★ONでお気に入りを先頭に並べ替え。非表示にはしない）
   lastInvoiceNo: null   // 直近の印刷でサーバ採番された伝票番号
 };
 
@@ -602,12 +601,6 @@ function renderProducts() {
 
   grid.innerHTML = Array.from(groups.values())
     .sort((a, b) => {
-      // 第零キー：★ONのときはお気に入りを最優先で先頭へ（案A：グループ横断）
-      if (state.showFavoritesOnly) {
-        const fa = a.some(isFavorite) ? 0 : 1;
-        const fb = b.some(isFavorite) ? 0 : 1;
-        if (fa !== fb) return fa - fb;
-      }
       // 第一キー：group（診療を先、薬・物販を後）
       const ga = a[0].group === "診療" ? 0 : 1;
       const gb = b[0].group === "診療" ? 0 : 1;
@@ -618,7 +611,6 @@ function renderProducts() {
     .map(group => {
       const p = group[0];
       const color = getCategoryColor(p.category, p.color);
-      const fav = group.some(isFavorite) ? `<span class="tile-fav">★</span>` : "";
       const isMG = (p.modalGroup || "").trim() !== "";
 
       // モーダルグループで束ねられている（複数行）：区分選択 or 複数選択モーダル
@@ -627,7 +619,6 @@ function renderProducts() {
         const isMultiPick = group.some(x => (x.qtyType || "").toString().trim() === "複数選択");
         if (isMultiPick) {
           return `<div class="product-tile" style="--tile-color:${color}" onclick="openMultiPickModal('${escapeHtml(p.modalGroup)}')">
-            ${fav}
             <span class="tile-multidose">☑</span>
             <div class="tile-name">${escapeHtml(p.modalGroup)}</div>
             <div class="tile-dose">${group.length}項目・複数選択可</div>
@@ -637,7 +628,7 @@ function renderProducts() {
         const grpFormula = group.some(hasFormula) ? `<span class="tile-formula">計</span>` : "";
         const grpPrice = (!grpFormula && group.some(hasGigiSame)) ? `<span class="tile-formula">¥</span>` : "";
         return `<div class="product-tile" style="--tile-color:${color}" onclick="openDoseModalByGroup('${escapeHtml(p.modalGroup)}')">
-          ${fav}${grpFormula}${grpPrice}
+          ${grpFormula}${grpPrice}
           <span class="tile-multidose">▾</span>
           <div class="tile-name">${escapeHtml(p.modalGroup)}</div>
           <div class="tile-dose">${group.length}種類</div>
@@ -666,7 +657,7 @@ function renderProducts() {
       const doseLine = p.dose ? `<div class="tile-dose">${escapeHtml(p.dose)}</div>` : "";
 
       return `<div class="product-tile" style="--tile-color:${color}" data-product-id="${p.id}" onclick="${clickAction}">
-        ${fav}${pickMark}${priceMark}${formulaMark}
+        ${pickMark}${priceMark}${formulaMark}
         <div class="tile-name">${escapeHtml(p.name)}</div>
         ${doseLine}
         <div class="tile-price">¥${p.price.toLocaleString()}${unitSuffix(p.unit)}</div>
@@ -674,11 +665,6 @@ function renderProducts() {
     }).join("");
 }
 
-// お気に入り判定（L列に何か入っていればお気に入り）
-function isFavorite(p) {
-  const v = (p.favorite || "").toString().trim();
-  return v !== "" && v !== "0" && v.toLowerCase() !== "false";
-}
 // 担当者選択フラグ判定
 // マスタでは「まる」に見える文字が複数混在する。
 //   〇 U+3007（漢数字のゼロ）／ ◯ U+25EF（大きな丸）／ ○ U+25CB（白丸）ほか
@@ -773,14 +759,6 @@ function formulaInputLabel(varName) {
   if (varName === "ml") return "使用量（ml）";
   return varName;
 }
-// お気に入り優先表示の切り替え
-function toggleFavorites() {
-  state.showFavoritesOnly = !state.showFavoritesOnly;
-  const btn = document.getElementById("favToggleBtn");
-  if (btn) btn.classList.toggle("active", state.showFavoritesOnly);
-  renderProducts();
-}
-
 // ===== 検索クリア（×ボタン） =====
 function clearSearch() {
   const input = document.getElementById("searchInput");
@@ -1017,7 +995,8 @@ function openDoseModalByGroup(modalGroup) {
     </div>
   `).join("");
   document.getElementById("doseOptions").innerHTML = opts;
-  document.getElementById("doseQty").value = 1;
+  // 数量は未記入で開く。他の入力欄と揃え、1のまま誤って確定するのを防ぐ。
+  document.getElementById("doseQty").value = "";
   document.getElementById("stayHeads").value = 1;
   document.getElementById("stayNights").value = 1;
   updateDoseQtyLabel();
@@ -1631,6 +1610,58 @@ function confirmPowder() {
 }
 
 // ===== 自由入力モーダル（マスタにない項目を追加） =====
+// ===== 団体割引 =====
+// 商品カードは作らず、ツールバーのボタンから金額を入力して追加する。
+// 入力はプラスの「割引額」で受け取り、カートにはマイナス金額で積む。
+// 技術料は発生しない（masterPrice 0 / gigi 0 なので calcItemGigi は 0 を返す）。
+// 自由入力ではないので isFree は立てない（明細セルのオレンジ着色の対象外）。
+const GROUP_DISC_NAME = "【団体割引】";
+
+function openGroupDiscModal() {
+  document.getElementById("groupDiscAmount").value = "";
+  document.getElementById("groupDiscDisp").textContent = "¥0";
+  document.getElementById("groupDiscModal").classList.remove("hidden");
+  setTimeout(() => document.getElementById("groupDiscAmount").focus(), 100);
+}
+function closeGroupDiscModal() {
+  document.getElementById("groupDiscModal").classList.add("hidden");
+}
+function updateGroupDiscTotal() {
+  const amt = Math.floor(Math.abs(parseFloat(document.getElementById("groupDiscAmount").value) || 0));
+  document.getElementById("groupDiscDisp").textContent =
+    amt > 0 ? "-¥" + amt.toLocaleString() : "¥0";
+}
+function confirmGroupDisc() {
+  const amt = Math.floor(Math.abs(parseFloat(document.getElementById("groupDiscAmount").value) || 0));
+  if (amt <= 0) {
+    showToast("割引額を入力してください", "error");
+    return;
+  }
+  // finalizeNewCartItem は通さない。割引は返品ではないので、
+  // 返品モードON中に団割を押しても返品モードを消費しないようにする。
+  state.cart.push({
+    itemId: itemIdCounter++,
+    productId: null,
+    isPowder: false,
+    group: "診療",
+    name: GROUP_DISC_NAME,
+    dose: "",
+    category: "その他",
+    subcategory: "",
+    qty: 1,
+    price: -amt,
+    unit: "",
+    qtyType: "整数固定",
+    staffRole: null,
+    isNurseMark: false,
+    masterPrice: 0,
+    gigi: 0
+  });
+  closeGroupDiscModal();
+  renderCart();
+  showToast("団体割引 -¥" + amt.toLocaleString() + " を追加しました");
+}
+
 function openFreeModal() {
   document.getElementById("freeName").value = "";
   document.getElementById("freePrice").value = "";
