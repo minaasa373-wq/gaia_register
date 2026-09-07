@@ -995,8 +995,13 @@ function openDoseModalByGroup(modalGroup) {
     </div>
   `).join("");
   document.getElementById("doseOptions").innerHTML = opts;
-  // 数量は未記入で開く。他の入力欄と揃え、1のまま誤って確定するのを防ぐ。
-  document.getElementById("doseQty").value = "";
+  // 数量の初期値はマスタによって変える。
+  //   商品マスタ（診療）  … 初診料・処置など数量1が基本なので 1 を入れておく
+  //   薬品・物品マスタ    … 錠数・本数は毎回違うので未記入。1のまま誤確定するのを防ぐ
+  // モーダルグループは323件すべてどちらか一方のマスタに収まっており
+  // （混在ゼロを実データで確認済み）、先頭品目の group で判定できる。
+  const isClinical = (doseGroup[0].group || "診療") === "診療";
+  document.getElementById("doseQty").value = isClinical ? 1 : "";
   document.getElementById("stayHeads").value = 1;
   document.getElementById("stayNights").value = 1;
   updateDoseQtyLabel();
