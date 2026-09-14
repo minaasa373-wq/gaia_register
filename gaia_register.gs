@@ -413,10 +413,20 @@ function doPost(e) {
 
     // 自由入力を使った会計は「明細」セルに色を付ける。
     // 月末の突合で「技術料の追記が要る項目か」を拾うための目印。
-    // 列が無い・古いクライアントで hasFreeInput が来ない場合は何もしない。
-    if (data.hasFreeInput === true && ("明細" in C)) {
+    //
+    // 【重要】ここは「塗る／塗らない」ではなく、毎回どちらかを必ず書く。
+    // appendRow で増えた行は直前の行の書式を引き継ぐため、塗るときだけ
+    // setBackground していると、一度オレンジになった次の行から延々と
+    // オレンジが伝染する（2026-09-04 の伝票3081を起点に587行が巻き込まれた）。
+    // 自由入力でない会計では明示的に null（色なし）へ戻すことで伝染を止める。
+    //
+    // hasFreeInput が来ない古いクライアント（undefined / null）だけは、
+    // 判断材料が無いので従来どおり何もしない。
+    const freeInputFlag = data.hasFreeInput;
+    if (freeInputFlag !== undefined && freeInputFlag !== null && ("明細" in C)) {
       try {
-        sheet.getRange(newRow, C["明細"] + 1).setBackground(FREE_INPUT_COLOR);
+        sheet.getRange(newRow, C["明細"] + 1)
+             .setBackground(freeInputFlag === true ? FREE_INPUT_COLOR : null);
       } catch (eColor) {
         // 色は目印にすぎない。ここで失敗しても会計は成立させる。
       }
