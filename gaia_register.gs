@@ -722,6 +722,8 @@ function setupSheets() {
 function onOpen() {
   SpreadsheetApp.getUi()
     .createMenu("🏥 ガイア")
+    .addItem("伝票を開いて確認", "openSlipCheck")
+    .addSeparator()
     .addItem("技術料台帳の整合チェック", "checkGigiLedger")
     .addItem("未チェック伝票の確認", "promptUncheckedRecords")
     .addItem("二重送信チェック", "promptDuplicateCheck")
@@ -2062,6 +2064,394 @@ function checkDuplicateRecords(year, month) {
          "削除後は「技術料台帳の整合チェック」を実行してください。";
 
   ui.alert("二重送信チェック", msg, ui.ButtonSet.OK);
+}
+
+// =====================================================================
+// 伝票を開いて確認（紙の明細書との突合作業用のダイアログ）
+// ---------------------------------------------------------------------
+// 販売記録をマウスでスクロールして探す代わりに、伝票番号を打てば1件だけ
+// 表示する。その場で「確認済み」「カード決済」のチェック、技術料の修正、
+// 不要な伝票の削除までを終わらせるための画面。
+//
+// 設計の前提：
+//   - 販売記録が正。技術料台帳・カード決済台帳は販売記録に合わせる
+//     （既存の「技術料台帳の整合チェック」と同じ考え方）。
+//   - 書き込みは doPost と同じスクリプトロックで直列化する。iPadから会計が
+//     記録されている最中に行を消すと、行番号がずれるため。
+//   - 削除は4シートから消す。元に戻せないので、画面側で二段確認してから呼ぶ。
+//   - 伝票番号の照合は normInvoice（先頭ゼロを落とす）で行う。TextFinder は
+//     セルの見た目で探すため "0004" と 4 を同じものとして扱えない。
+//     販売記録の伝票番号列は1列だけ読めば済むので、全件読んでも十分速い。
+// =====================================================================
+
+// ===== メニューから開く =====
+function openSlipCheck() {
+  const html = HtmlService.createHtmlOutputFromFile("slip_check")
+    .setWidth(960)
+    .setHeight(620);
+  SpreadsheetApp.getUi().showModelessDialog(html, "伝票を開いて確認");
+}
+
+// ===== 伝票番号から行番号を探す =====
+// 指定シートの指定列を1列だけ読み、normInvoice で突き合わせる。
+// 戻り値：行番号の配列（見つからなければ空配列）
+function findInvoiceRows_(sheet, invoiceNo, colName) {
+  const out = [];
+  if (!sheet || sheet.getLastRow() < 2) return out;
+  const key = normInvoice(invoiceNo);
+  if (!key) return out;
+
+  const cm = buildColMap(sheet, null);
+  if (!(colName in cm.idx)) return out;
+
+  const col = cm.idx[colName] + 1;
+  const values = sheet.getRange(2, col, sheet.getLastRow() - 1, 1).getValues();
+  values.forEach(function (r, i) {
+    if (normInvoice(r[0]) === key) out.push(i + 2);
+  });
+  return out;
+}
+
+// カード決済台帳の「集計済み」列の表示用。
+// markCardCarryover は "2026-08" という文字列を書くが、スプレッドシートが
+// 日付として解釈してセルに Date が入る（実データで確認）。そのままでは
+// 画面に "Sat Aug 01 2026 …" と出てしまうので yyyy-MM に戻す。
+function uiAggTag_(v) {
+  if (Object.prototype.toString.call(v) === "[object Date]") {
+    return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM");
+  }
+  return String(v == null ? "" : v).trim();
+}
+
+// 日付・日時の表示用（ダイアログにはDateではなく文字列で渡す）
+function uiFmtDate_(v) {
+  const d = parseVisitDate(v);
+  if (!d) return String(v || "");
+  return Utilities.formatDate(d, Session.getScriptTimeZone(), "yyyy-MM-dd");
+}
+function uiFmtDateTime_(v) {
+  if (!(v instanceof Date)) return String(v || "");
+  return Utilities.formatDate(v, Session.getScriptTimeZone(), "yyyy-MM-dd HH:mm");
+}
+
+// ===== 1件分の表示データを組み立てる =====
+// 販売記録の1行＋各台帳の状況をまとめて返す。
+function buildSlipView_(ss, rec, sheetRow) {
+  const cm = buildColMap(rec, null);
+  const C = cm.idx;
+  const r = rec.getRange(sheetRow, 1, 1, cm.count).getValues()[0];
+  const get = function (name) { return (name in C) ? r[C[name]] : ""; };
+
+  const invoiceNo = String(get("伝票番号") || "").trim();
+  const view = {
+    sheetRow:     sheetRow,
+    invoiceNo:    invoiceNo,
+    visitDate:    uiFmtDate_(get("会計日")),
+    recordedAt:   uiFmtDateTime_(get("記録日時")),
+    owner:        String(get("飼い主名") || ""),
+    pet:          String(get("ペット名") || ""),
+    animal:       String(get("動物種") || ""),
+    staff:        String(get("担当者") || ""),
+    staffCount:   Number(get("担当人数")) || 1,
+    items:        String(get("明細") || ""),
+    gigiSnapshot: String(get("技術料明細") || ""),
+    subtotal:     Number(get("小計")) || 0,
+    tax:          Number(get("消費税")) || 0,
+    total:        Number(get("合計")) || 0,
+    gigiNon:      Number(get("通常技術料")) || 0,
+    gigiVac:      Number(get("ワクチン技術料")) || 0,
+    checked:      isChecked(get("確認済み")),
+    card:         isChecked(get("カード決済")),
+    freeInput:    false,
+    cardLedger:   null,
+    notes:        []
+  };
+
+  // 明細セルが薄オレンジ＝自由入力を使った会計。技術料の追記が要るかの目印。
+  if ("明細" in C) {
+    try {
+      const bg = String(rec.getRange(sheetRow, C["明細"] + 1).getBackground() || "").toLowerCase();
+      view.freeInput = (bg === FREE_INPUT_COLOR);
+    } catch (e) { /* 色が取れなくても表示は続ける */ }
+  }
+
+  // 技術料台帳の状況
+  const led = ss.getSheetByName(SHEET_GIGI_LEDGER);
+  const ledRows = led ? findInvoiceRows_(led, invoiceNo, "伝票番号") : [];
+  view.gigiLedgerRows = ledRows.length;
+  if (!led) {
+    view.notes.push("技術料台帳が見つかりません");
+  } else if (ledRows.length === 0) {
+    view.notes.push("技術料台帳にこの伝票の行がありません（整合チェックで復元できます）");
+  } else if (ledRows.length > 1) {
+    view.notes.push("技術料台帳に同じ伝票が" + ledRows.length + "行あります。台帳は自動で直しません");
+  } else {
+    const lcm = buildColMap(led, null);
+    const lr = led.getRange(ledRows[0], 1, 1, lcm.count).getValues()[0];
+    const ln = Number(lr[lcm.idx["通常技術料"]]) || 0;
+    const lv = Number(lr[lcm.idx["ワクチン技術料"]]) || 0;
+    if (ln !== view.gigiNon || lv !== view.gigiVac) {
+      view.notes.push("技術料台帳の値が販売記録と違います（台帳：通常 ¥" +
+                      ln.toLocaleString() + " / ワクチン ¥" + lv.toLocaleString() + "）");
+    }
+  }
+
+  // カード決済台帳の状況（転記済みか、入金確認済みか、給与に乗せたか）
+  const card = ss.getSheetByName(SHEET_CARD_LEDGER);
+  if (card && card.getLastRow() >= 2) {
+    const cRows = findInvoiceRows_(card, invoiceNo, "伝票番号");
+    if (cRows.length) {
+      const ccm = buildColMap(card, null);
+      const cr = card.getRange(cRows[0], 1, 1, ccm.count).getValues()[0];
+      view.cardLedger = {
+        rows:       cRows.length,
+        settled:    ("精算済" in ccm.idx) ? isChecked(cr[ccm.idx["精算済"]]) : false,
+        aggregated: ("集計済み" in ccm.idx) ? uiAggTag_(cr[ccm.idx["集計済み"]]) : ""
+      };
+      if (view.cardLedger.aggregated) {
+        view.notes.push("カード決済台帳で " + view.cardLedger.aggregated + " の給与に反映済みです");
+      }
+    }
+  }
+
+  return view;
+}
+
+// ===== ダイアログ：伝票を引く =====
+function uiLookupSlip(invoiceNo) {
+  try {
+    const key = normInvoice(invoiceNo);
+    if (!key) return { result: "error", message: "伝票番号を入力してください" };
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const rec = ss.getSheetByName(SHEET_RECORDS);
+    if (!rec || rec.getLastRow() < 2) {
+      return { result: "error", message: "販売記録にデータがありません" };
+    }
+
+    const rows = findInvoiceRows_(rec, key, "伝票番号");
+    if (!rows.length) {
+      return { result: "notfound", message: "伝票 " + String(invoiceNo).trim() + " は見つかりませんでした" };
+    }
+
+    const hits = rows.map(function (row) { return buildSlipView_(ss, rec, row); });
+    return { result: "success", hits: hits };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  }
+}
+
+// 保存・削除の直前に行番号を引き直す。
+// 画面を開いてから他の端末で会計が入る／行が消えると行番号がずれるため、
+// 「その行が本当にその伝票か」を必ず確かめてから書く。
+function resolveSlipRow_(rec, invoiceNo, sheetRow) {
+  const cm = buildColMap(rec, null);
+  const C = cm.idx;
+  const key = normInvoice(invoiceNo);
+  if (!key) return { error: "伝票番号がありません" };
+
+  if (sheetRow >= 2 && sheetRow <= rec.getLastRow()) {
+    const v = rec.getRange(sheetRow, C["伝票番号"] + 1).getValue();
+    if (normInvoice(v) === key) return { row: sheetRow, cm: cm };
+  }
+
+  const rows = findInvoiceRows_(rec, key, "伝票番号");
+  if (rows.length === 1) return { row: rows[0], cm: cm };
+  if (rows.length === 0) {
+    return { error: "伝票 " + invoiceNo + " が販売記録に見つかりません。画面を開き直してください。" };
+  }
+  return { error: "伝票 " + invoiceNo + " が販売記録に" + rows.length + "行あります。どの行か特定できないので、画面を開き直してください。" };
+}
+
+// ===== ダイアログ：保存 =====
+// payload: { invoiceNo, sheetRow, checked, card, gigiNon, gigiVac, confirmAggregated }
+function uiSaveSlip(payload) {
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return { result: "error", message: "他の処理が実行中です。少し待ってからもう一度お試しください。" };
+  }
+  try {
+    const ss  = SpreadsheetApp.getActiveSpreadsheet();
+    const rec = ss.getSheetByName(SHEET_RECORDS);
+    if (!rec) return { result: "error", message: "販売記録が見つかりません" };
+
+    const found = resolveSlipRow_(rec, payload.invoiceNo, Number(payload.sheetRow) || 0);
+    if (found.error) return { result: "error", message: found.error };
+    const row = found.row;
+    const C   = found.cm.idx;
+
+    const gigiNon = Math.round(Number(payload.gigiNon) || 0);
+    const gigiVac = Math.round(Number(payload.gigiVac) || 0);
+    if (gigiNon < 0 || gigiVac < 0) {
+      return { result: "error", message: "技術料にマイナスは入れられません" };
+    }
+
+    // 書き込む列が無い環境では何もしない（列名を変えられた場合の保険）
+    const need = ["通常技術料", "ワクチン技術料", "確認済み", "カード決済", "伝票番号"];
+    const missing = need.filter(function (n) { return !(n in C); });
+    if (missing.length) {
+      return { result: "error", message: "販売記録に次の列がありません：" + missing.join("、") };
+    }
+
+    const cur = rec.getRange(row, 1, 1, found.cm.count).getValues()[0];
+    const curNon = Number(cur[C["通常技術料"]]) || 0;
+    const curVac = Number(cur[C["ワクチン技術料"]]) || 0;
+    const curCard = isChecked(cur[C["カード決済"]]);
+    const invoiceNo = String(cur[C["伝票番号"]] || "").trim();
+    const gigiChanged = (gigiNon !== curNon || gigiVac !== curVac);
+
+    // カード決済台帳の該当行（技術料を直すときは繰越の金額も揃える必要がある）
+    const cardSheet = ss.getSheetByName(SHEET_CARD_LEDGER);
+    let cardRows = [];
+    let cardCm = null;
+    let aggregatedTag = "";
+    if (cardSheet && cardSheet.getLastRow() >= 2) {
+      cardRows = findInvoiceRows_(cardSheet, invoiceNo, "伝票番号");
+      if (cardRows.length) {
+        cardCm = buildColMap(cardSheet, null);
+        if ("集計済み" in cardCm.idx) {
+          aggregatedTag = uiAggTag_(
+            cardSheet.getRange(cardRows[0], cardCm.idx["集計済み"] + 1).getValue()
+          );
+        }
+      }
+    }
+
+    // すでに給与へ反映済みの伝票の技術料を直すと、支給済みの金額と食い違う。
+    // 画面側で明示的にOKしてもらってから書く。
+    if (gigiChanged && aggregatedTag && !payload.confirmAggregated) {
+      return {
+        result: "confirm",
+        message: "この伝票は " + aggregatedTag + " の給与に反映済みです。\n" +
+                 "技術料を ¥" + curNon.toLocaleString() + " / ¥" + curVac.toLocaleString() +
+                 " から ¥" + gigiNon.toLocaleString() + " / ¥" + gigiVac.toLocaleString() +
+                 " に変更すると、支給済みの金額と合わなくなります。\n\n続けますか？"
+      };
+    }
+
+    const warnings = [];
+
+    // ---- 1. 販売記録（ここが正）----
+    rec.getRange(row, C["通常技術料"] + 1).setValue(gigiNon);
+    rec.getRange(row, C["ワクチン技術料"] + 1).setValue(gigiVac);
+    rec.getRange(row, C["確認済み"] + 1).setValue(payload.checked === true);
+    rec.getRange(row, C["カード決済"] + 1).setValue(payload.card === true);
+
+    // どちらかにチェックが付いたら「未チェック伝票」の水色は用済みなので消す。
+    // （メニューを回し直さないと消えない状態を作らないため）
+    if (payload.checked === true || payload.card === true) {
+      try {
+        rec.getRangeList([
+          columnToLetter(C["確認済み"] + 1) + row,
+          columnToLetter(C["カード決済"] + 1) + row
+        ]).setBackground(null);
+      } catch (eBg) { /* 色は目印。失敗しても保存は成立させる */ }
+    }
+
+    // ---- 2. 技術料台帳 ----
+    const led = ss.getSheetByName(SHEET_GIGI_LEDGER);
+    if (!led) {
+      warnings.push("技術料台帳が見つかりません");
+    } else {
+      const ledRows = findInvoiceRows_(led, invoiceNo, "伝票番号");
+      if (ledRows.length === 0) {
+        warnings.push("技術料台帳にこの伝票の行がありません。「技術料台帳の整合チェック」で復元してください");
+      } else if (ledRows.length > 1) {
+        warnings.push("技術料台帳に同じ伝票が" + ledRows.length + "行あります。自動では直さないので手で確認してください");
+      } else {
+        const lcm = buildColMap(led, null);
+        led.getRange(ledRows[0], lcm.idx["通常技術料"] + 1).setValue(gigiNon);
+        led.getRange(ledRows[0], lcm.idx["ワクチン技術料"] + 1).setValue(gigiVac);
+      }
+    }
+
+    // ---- 3. カード決済台帳（転記済みの伝票だけ）----
+    if (cardRows.length === 1 && cardCm) {
+      if ("通常技術料" in cardCm.idx)     cardSheet.getRange(cardRows[0], cardCm.idx["通常技術料"] + 1).setValue(gigiNon);
+      if ("ワクチン技術料" in cardCm.idx) cardSheet.getRange(cardRows[0], cardCm.idx["ワクチン技術料"] + 1).setValue(gigiVac);
+    } else if (cardRows.length > 1) {
+      warnings.push("カード決済台帳に同じ伝票が" + cardRows.length + "行あります。自動では直しません");
+    }
+
+    // カード決済のチェックを外しても、転記済みの台帳の行は残る（消すと繰越の
+    // 履歴が消えるため）。人が判断できるように知らせるだけにする。
+    if (curCard && payload.card !== true && cardRows.length) {
+      warnings.push("カード決済のチェックを外しましたが、カード決済台帳の行は残ります。不要なら台帳側で消してください");
+    }
+
+    SpreadsheetApp.flush();
+    return {
+      result: "success",
+      invoiceNo: invoiceNo,
+      warnings: warnings,
+      view: buildSlipView_(ss, rec, row)
+    };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// ===== ダイアログ：削除 =====
+// 販売記録・技術料台帳・ワクチン台帳・カード決済台帳の4枚から消す。
+// 元に戻せないので、画面側の二段確認（confirmDelete）が無ければ何もしない。
+// payload: { invoiceNo, sheetRow, confirmDelete }
+function uiDeleteSlip(payload) {
+  if (payload.confirmDelete !== true) {
+    return { result: "error", message: "削除の確認が取れていません" };
+  }
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return { result: "error", message: "他の処理が実行中です。少し待ってからもう一度お試しください。" };
+  }
+  try {
+    const ss  = SpreadsheetApp.getActiveSpreadsheet();
+    const rec = ss.getSheetByName(SHEET_RECORDS);
+    if (!rec) return { result: "error", message: "販売記録が見つかりません" };
+
+    const found = resolveSlipRow_(rec, payload.invoiceNo, Number(payload.sheetRow) || 0);
+    if (found.error) return { result: "error", message: found.error };
+    const row = found.row;
+    const C   = found.cm.idx;
+
+    // 消す前にシート上の伝票番号を確かめる（画面から来た番号をそのまま信じない）
+    const r = rec.getRange(row, 1, 1, found.cm.count).getValues()[0];
+    const invoiceNo = String(("伝票番号" in C) ? r[C["伝票番号"]] : "").trim();
+
+    const removed = [];   // 「シート名:行数」の控え
+    const deleteFrom = function (sheetName) {
+      const sh = ss.getSheetByName(sheetName);
+      if (!sh || sh.getLastRow() < 2) return 0;
+      const rows = findInvoiceRows_(sh, invoiceNo, "伝票番号");
+      // 下から消す（先に上を消すと以降の行番号がずれる）
+      rows.slice().sort(function (a, b) { return b - a; })
+          .forEach(function (n) { sh.deleteRow(n); });
+      if (rows.length) removed.push(sheetName + " " + rows.length + "行");
+      return rows.length;
+    };
+
+    const counts = {
+      gigi:    deleteFrom(SHEET_GIGI_LEDGER),
+      vaccine: deleteFrom(SHEET_VACCINE_LEDGER),
+      card:    deleteFrom(SHEET_CARD_LEDGER)
+    };
+    rec.deleteRow(row);
+    removed.push(SHEET_RECORDS + " 1行");
+    counts.record = 1;
+
+    SpreadsheetApp.flush();
+    return {
+      result: "success",
+      invoiceNo: invoiceNo,
+      counts: counts,
+      removed: removed.join(" / ")
+    };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  } finally {
+    lock.releaseLock();
+  }
 }
 
 // ===== ユーティリティ =====

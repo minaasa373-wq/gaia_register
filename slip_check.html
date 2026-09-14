@@ -1,0 +1,507 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  :root {
+    --green:  #1a5c3a;
+    --line:   #d8ddd8;
+    --bg:     #f6f7f5;
+    --orange: #ffe0b2;
+    --blue:   #b3e5fc;
+    --red:    #c62828;
+    --amber:  #8a6d1f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    font-size: 13px; color: #222; background: #fff;
+  }
+  body { display: flex; flex-direction: column; }
+
+  /* ---- 上段：伝票番号の入力 ---- */
+  .bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; background: var(--green); color: #fff; flex: none;
+  }
+  .bar label { font-weight: bold; font-size: 14px; }
+  #invoice {
+    width: 150px; padding: 8px 10px; font-size: 20px; font-weight: bold;
+    text-align: center; border: 2px solid #fff; border-radius: 6px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .bar .hint { font-size: 11px; opacity: .85; line-height: 1.5; }
+  .bar .spacer { flex: 1; }
+  .btn {
+    padding: 8px 14px; font-size: 13px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: #222;
+  }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn-main {
+    background: #f9a825; border-color: #f9a825; color: #222;
+    font-weight: bold; font-size: 15px; padding: 10px 22px;
+  }
+  .btn-main:focus { outline: 3px solid #1a5c3a; outline-offset: 2px; }
+  .btn-danger { border-color: var(--red); color: var(--red); }
+
+  /* ---- 本体 ---- */
+  .body { flex: 1; overflow: auto; padding: 12px 14px; background: var(--bg); }
+  .placeholder { color: #8a8f8a; text-align: center; padding: 60px 20px; line-height: 2; }
+  .placeholder .big { font-size: 15px; color: #555; }
+
+  .cols { display: flex; gap: 12px; align-items: flex-start; }
+  .col-l { flex: 1.15; min-width: 0; }
+  .col-r { flex: 1; min-width: 0; }
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 10px;
+  }
+  .card h3 {
+    margin: 0 0 8px; font-size: 11px; color: #6b726b;
+    letter-spacing: .08em; font-weight: bold;
+  }
+  pre.items {
+    margin: 0; white-space: pre-wrap; word-break: break-all;
+    font-family: "SF Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.75;
+    max-height: 230px; overflow: auto;
+  }
+  pre.snap {
+    margin: 0; white-space: pre-wrap; word-break: break-all;
+    font-family: "SF Mono", Consolas, monospace; font-size: 11px; line-height: 1.6;
+    color: #555; max-height: 120px; overflow: auto;
+  }
+
+  table.meta { width: 100%; border-collapse: collapse; }
+  table.meta th, table.meta td {
+    text-align: left; padding: 4px 2px; border-bottom: 1px solid #eee; vertical-align: top;
+  }
+  table.meta th { width: 74px; color: #6b726b; font-weight: normal; }
+  .total { font-size: 19px; font-weight: bold; }
+
+  .gigi-row { display: flex; gap: 10px; }
+  .gigi-row > div { flex: 1; }
+  .gigi-row label { display: block; font-size: 11px; color: #6b726b; margin-bottom: 3px; }
+  .gigi-row input {
+    width: 100%; padding: 7px 9px; font-size: 16px; text-align: right;
+    border: 1px solid var(--line); border-radius: 5px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .gigi-row input.changed { border-color: #f9a825; background: #fffbf0; }
+
+  .toggles { display: flex; gap: 8px; }
+  .toggle {
+    flex: 1; padding: 12px 6px; border: 2px solid var(--line); border-radius: 8px;
+    background: #fff; cursor: pointer; text-align: center; font-size: 14px;
+  }
+  .toggle .key { display: block; font-size: 10px; color: #8a8f8a; margin-top: 3px; }
+  .toggle.on { border-color: var(--green); background: #e8f3ec; font-weight: bold; }
+  .toggle.on .mark { color: var(--green); }
+
+  .badge {
+    display: inline-block; padding: 3px 9px; border-radius: 11px;
+    font-size: 11px; margin-right: 6px;
+  }
+  .badge-free { background: var(--orange); }
+  .badge-card { background: var(--blue); }
+  .notes { color: var(--amber); font-size: 12px; line-height: 1.7; }
+  .notes div::before { content: "⚠ "; }
+
+  /* ---- 候補が複数 ---- */
+  .pick { cursor: pointer; }
+  .pick:hover { background: #f0f6f2; }
+
+  /* ---- 削除の確認 ---- */
+  .danger {
+    border: 2px solid var(--red); background: #fff5f5;
+    border-radius: 8px; padding: 12px; margin-bottom: 10px;
+  }
+  .danger h3 { color: var(--red); margin: 0 0 6px; font-size: 13px; }
+  .danger p { margin: 0 0 10px; line-height: 1.7; }
+
+  /* ---- 下段 ---- */
+  .foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-top: 1px solid var(--line); background: #fff; flex: none;
+  }
+  .foot .spacer { flex: 1; }
+  #status { font-size: 12px; color: #555; }
+  #status.err { color: var(--red); font-weight: bold; }
+  #status.ok  { color: var(--green); }
+</style>
+</head>
+<body>
+
+<div class="bar">
+  <label for="invoice">伝票番号</label>
+  <input id="invoice" type="text" inputmode="numeric" autocomplete="off">
+  <button class="btn" id="btnLookup">表示</button>
+  <div class="spacer"></div>
+  <div class="hint">
+    番号を入れて <b>Enter</b> → 内容を確認して <b>Enter</b> で確認済み＋保存<br>
+    <b>1</b> 確認済み ／ <b>2</b> カード決済 ／ <b>Esc</b> 番号入力に戻る
+  </div>
+</div>
+
+<div class="body" id="body">
+  <div class="placeholder">
+    <div class="big">紙の明細書の伝票番号を入力してください。</div>
+    <div>販売記録・技術料台帳・カード決済台帳をまとめて更新します。</div>
+  </div>
+</div>
+
+<div class="foot">
+  <button class="btn btn-main" id="btnSave" disabled>保存して次へ</button>
+  <button class="btn btn-danger" id="btnDelete" disabled>この伝票を削除</button>
+  <div class="spacer"></div>
+  <span id="status"></span>
+</div>
+
+<script>
+// =====================================================================
+// 伝票を開いて確認
+// 紙の明細書を見ながら、伝票番号 → Enter → Enter で1件が終わる形にしている。
+// 画面が持つ状態は「いま表示している1件（slip）」だけ。
+// =====================================================================
+var slip = null;       // 表示中の伝票（サーバから受け取ったまま）
+var busy = false;      // 通信中（二重送信の防止）
+var deleting = false;  // 削除の確認パネルを出している間は Enter を横取りしない
+var elInv    = document.getElementById("invoice");
+var elBody   = document.getElementById("body");
+var elSave   = document.getElementById("btnSave");
+var elDelete = document.getElementById("btnDelete");
+var elStatus = document.getElementById("status");
+
+function yen(n) { return "¥" + (Number(n) || 0).toLocaleString(); }
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function setStatus(msg, kind) {
+  elStatus.textContent = msg || "";
+  elStatus.className = kind || "";
+}
+function setBusy(on) {
+  busy = on;
+  document.getElementById("btnLookup").disabled = on;
+  elSave.disabled   = on || !slip;
+  elDelete.disabled = on || !slip;
+}
+
+// ---- 入力欄へ戻る ----
+function backToInput(keep) {
+  slip = null;
+  setBusy(false);
+  if (!keep) elInv.value = "";
+  elInv.focus();
+  elInv.select();
+}
+
+// ---- 伝票を引く ----
+function lookup() {
+  if (busy) return;
+  var no = elInv.value.trim();
+  if (!no) { elInv.focus(); return; }
+  setBusy(true);
+  setStatus("伝票 " + no + " を探しています…");
+  elBody.innerHTML = '<div class="placeholder">読み込み中…</div>';
+  google.script.run
+    .withSuccessHandler(onLookup)
+    .withFailureHandler(onFail)
+    .uiLookupSlip(no);
+}
+
+function onLookup(res) {
+  setBusy(false);
+  if (!res || res.result === "error") {
+    slip = null;
+    render(null);
+    setStatus((res && res.message) || "読み込みに失敗しました", "err");
+    elInv.focus(); elInv.select();
+    return;
+  }
+  if (res.result === "notfound") {
+    slip = null;
+    render(null);
+    setStatus(res.message, "err");
+    elInv.focus(); elInv.select();
+    return;
+  }
+  if (res.hits.length > 1) {
+    slip = null;
+    renderPick(res.hits);
+    setStatus("同じ伝票番号が" + res.hits.length + "行あります。どの行か選んでください", "err");
+    return;
+  }
+  show(res.hits[0]);
+}
+
+function show(view) {
+  slip = view;
+  render(view);
+  setStatus("");
+  setBusy(false);
+  elSave.focus();     // ここで Enter を押すとそのまま保存になる
+}
+
+function onFail(e) {
+  setBusy(false);
+  setStatus("通信エラー：" + (e && e.message ? e.message : e), "err");
+}
+
+// ---- 描画 ----
+function render(v) {
+  if (!v) {
+    elBody.innerHTML =
+      '<div class="placeholder">' +
+      '<div class="big">紙の明細書の伝票番号を入力してください。</div>' +
+      '<div>販売記録・技術料台帳・カード決済台帳をまとめて更新します。</div></div>';
+    elSave.disabled = true;
+    elDelete.disabled = true;
+    return;
+  }
+
+  var badges = "";
+  if (v.freeInput) badges += '<span class="badge badge-free">自由入力あり</span>';
+  if (v.cardLedger) badges += '<span class="badge badge-card">カード台帳へ転記済み' +
+    (v.cardLedger.settled ? "・入金確認済み" : "") + '</span>';
+
+  var notes = "";
+  if (v.notes && v.notes.length) {
+    notes = '<div class="card"><div class="notes">' +
+            v.notes.map(function (n) { return "<div>" + esc(n) + "</div>"; }).join("") +
+            '</div></div>';
+  }
+
+  elBody.innerHTML =
+    '<div class="cols">' +
+      '<div class="col-l">' +
+        '<div class="card"><h3>明細</h3><pre class="items">' + esc(v.items) + '</pre></div>' +
+        '<div class="card"><h3>技術料の内訳（記録時のスナップショット）</h3>' +
+          '<pre class="snap">' + esc(v.gigiSnapshot || "（なし）") + '</pre></div>' +
+      '</div>' +
+      '<div class="col-r">' +
+        '<div class="card">' +
+          (badges ? '<div style="margin-bottom:8px">' + badges + '</div>' : '') +
+          '<table class="meta">' +
+            '<tr><th>伝票番号</th><td><b>' + esc(v.invoiceNo) + '</b>　<span style="color:#8a8f8a">販売記録 ' + v.sheetRow + '行目</span></td></tr>' +
+            '<tr><th>会計日</th><td>' + esc(v.visitDate) + '　<span style="color:#8a8f8a">記録 ' + esc(v.recordedAt) + '</span></td></tr>' +
+            '<tr><th>飼い主</th><td>' + esc(v.owner) + '</td></tr>' +
+            '<tr><th>ペット</th><td>' + esc(v.pet) + (v.animal ? '（' + esc(v.animal) + '）' : '') + '</td></tr>' +
+            '<tr><th>担当者</th><td>' + esc(v.staff) + '　<span style="color:#8a8f8a">' + v.staffCount + '名</span></td></tr>' +
+            '<tr><th>合計</th><td class="total">' + yen(v.total) + '</td></tr>' +
+          '</table>' +
+        '</div>' +
+        '<div class="card"><h3>技術料（販売記録・技術料台帳・カード台帳に反映）</h3>' +
+          '<div class="gigi-row">' +
+            '<div><label>通常技術料</label><input id="gigiNon" type="number" step="1" min="0" value="' + (v.gigiNon || 0) + '"></div>' +
+            '<div><label>ワクチン技術料</label><input id="gigiVac" type="number" step="1" min="0" value="' + (v.gigiVac || 0) + '"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card"><h3>チェック</h3>' +
+          '<div class="toggles">' +
+            '<div class="toggle" id="tgCheck"><span class="mark">□</span> 確認済み<span class="key">キー 1</span></div>' +
+            '<div class="toggle" id="tgCard"><span class="mark">□</span> カード決済<span class="key">キー 2</span></div>' +
+          '</div>' +
+        '</div>' +
+        notes +
+      '</div>' +
+    '</div>';
+
+  // 「保存して次へ」の既定は確認済みON。紙を1枚見て Enter だけで終わるようにする。
+  v.uiChecked = true;
+  v.uiCard    = v.card === true;
+  paintToggles();
+
+  document.getElementById("tgCheck").addEventListener("click", function () { toggle("check"); });
+  document.getElementById("tgCard").addEventListener("click",  function () { toggle("card"); });
+  ["gigiNon", "gigiVac"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", markChanged);
+  });
+
+  elSave.disabled = false;
+  elDelete.disabled = false;
+}
+
+function renderPick(hits) {
+  var rows = hits.map(function (h, i) {
+    return '<tr class="pick" data-i="' + i + '">' +
+      '<td><b>' + esc(h.invoiceNo) + '</b></td>' +
+      '<td>' + esc(h.visitDate) + '</td>' +
+      '<td>' + esc(h.owner) + ' ' + esc(h.pet) + '</td>' +
+      '<td>' + yen(h.total) + '</td>' +
+      '<td>' + esc(h.recordedAt) + '</td>' +
+      '<td>販売記録 ' + h.sheetRow + '行目</td></tr>';
+  }).join("");
+  elBody.innerHTML =
+    '<div class="card"><h3>同じ伝票番号の行が複数あります。開く行を選んでください</h3>' +
+    '<table class="meta">' + rows + '</table></div>';
+  Array.prototype.forEach.call(elBody.querySelectorAll("tr.pick"), function (tr) {
+    tr.addEventListener("click", function () { show(hits[Number(tr.getAttribute("data-i"))]); });
+  });
+  elSave.disabled = true;
+  elDelete.disabled = true;
+}
+
+function paintToggles() {
+  if (!slip) return;
+  var c = document.getElementById("tgCheck");
+  var d = document.getElementById("tgCard");
+  if (!c || !d) return;
+  c.className = "toggle" + (slip.uiChecked ? " on" : "");
+  d.className = "toggle" + (slip.uiCard ? " on" : "");
+  c.querySelector(".mark").textContent = slip.uiChecked ? "☑" : "□";
+  d.querySelector(".mark").textContent = slip.uiCard ? "☑" : "□";
+}
+
+function toggle(which) {
+  if (!slip) return;
+  if (which === "check") slip.uiChecked = !slip.uiChecked;
+  else                   slip.uiCard    = !slip.uiCard;
+  paintToggles();
+}
+
+function markChanged() {
+  if (!slip) return;
+  var n = document.getElementById("gigiNon");
+  var v = document.getElementById("gigiVac");
+  n.className = (Number(n.value) !== Number(slip.gigiNon)) ? "changed" : "";
+  v.className = (Number(v.value) !== Number(slip.gigiVac)) ? "changed" : "";
+}
+
+// ---- 保存 ----
+function save(confirmAggregated) {
+  if (busy || !slip) return;
+  var n = document.getElementById("gigiNon");
+  var v = document.getElementById("gigiVac");
+  var payload = {
+    invoiceNo: slip.invoiceNo,
+    sheetRow:  slip.sheetRow,
+    checked:   slip.uiChecked === true,
+    card:      slip.uiCard === true,
+    gigiNon:   n ? Number(n.value) || 0 : slip.gigiNon,
+    gigiVac:   v ? Number(v.value) || 0 : slip.gigiVac,
+    confirmAggregated: confirmAggregated === true
+  };
+  setBusy(true);
+  setStatus("保存しています…");
+  google.script.run
+    .withSuccessHandler(function (res) { onSave(res, payload); })
+    .withFailureHandler(onFail)
+    .uiSaveSlip(payload);
+}
+
+function onSave(res, payload) {
+  setBusy(false);
+  if (!res || res.result === "error") {
+    setStatus((res && res.message) || "保存に失敗しました", "err");
+    return;
+  }
+  if (res.result === "confirm") {
+    if (window.confirm(res.message)) { save(true); }
+    else { setStatus("保存を取りやめました"); }
+    return;
+  }
+  var msg = "伝票 " + res.invoiceNo + " を保存しました（確認済み " +
+            (payload.checked ? "✓" : "—") + " ／ カード決済 " +
+            (payload.card ? "✓" : "—") + "）";
+  if (res.warnings && res.warnings.length) {
+    setStatus(msg + "　⚠ " + res.warnings.join(" ／ "), "err");
+  } else {
+    setStatus(msg, "ok");
+  }
+  render(null);
+  backToInput(false);
+}
+
+// ---- 削除 ----
+function askDelete() {
+  if (busy || !slip) return;
+  var v = slip;
+  var panel = document.createElement("div");
+  panel.className = "danger";
+  panel.innerHTML =
+    '<h3>伝票 ' + esc(v.invoiceNo) + ' を削除します</h3>' +
+    '<p>' + esc(v.visitDate) + '　' + esc(v.owner) + ' ' + esc(v.pet) + '　' + yen(v.total) + '<br>' +
+    '販売記録・技術料台帳・ワクチン台帳・カード決済台帳から、この伝票の行をすべて消します。<br>' +
+    '<b>元には戻せません。</b></p>' +
+    '<button class="btn btn-danger" id="btnDoDelete">削除する</button> ' +
+    '<button class="btn" id="btnCancelDelete">やめる</button>';
+  elBody.insertBefore(panel, elBody.firstChild);
+  elBody.scrollTop = 0;
+  deleting = true;
+  document.getElementById("btnCancelDelete").addEventListener("click", closeDeletePanel);
+  document.getElementById("btnDoDelete").addEventListener("click", doDelete);
+  document.getElementById("btnDoDelete").focus();
+}
+
+function closeDeletePanel() {
+  deleting = false;
+  var panel = elBody.querySelector(".danger");
+  if (panel) panel.parentNode.removeChild(panel);
+  if (slip) elSave.focus();
+}
+
+function doDelete() {
+  if (busy || !slip) return;
+  setBusy(true);
+  deleting = false;
+  setStatus("削除しています…");
+  var no = slip.invoiceNo;
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setBusy(false);
+      if (!res || res.result === "error") {
+        setStatus((res && res.message) || "削除に失敗しました", "err");
+        return;
+      }
+      setStatus("伝票 " + res.invoiceNo + " を削除しました（" + res.removed + "）", "ok");
+      render(null);
+      backToInput(false);
+    })
+    .withFailureHandler(onFail)
+    .uiDeleteSlip({ invoiceNo: no, sheetRow: slip.sheetRow, confirmDelete: true });
+}
+
+// ---- キー操作 ----
+// 文字を打っている最中（input / textarea）は横取りしない。
+function typing(e) {
+  var t = e.target;
+  return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
+}
+
+elInv.addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { e.preventDefault(); lookup(); }
+});
+document.getElementById("btnLookup").addEventListener("click", lookup);
+elSave.addEventListener("click", function () { save(false); });
+elDelete.addEventListener("click", askDelete);
+
+document.addEventListener("keydown", function (e) {
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (deleting) { closeDeletePanel(); return; }   // 削除の確認だけ取り消す
+    render(null); backToInput(false);
+    return;
+  }
+  if (busy || !slip) return;
+  if (deleting) return;              // 確認パネルのボタンに任せる
+
+  if (e.key === "Enter") {
+    if (e.target && e.target.id === "invoice") return;   // 番号欄は自前のハンドラで引く
+    e.preventDefault();
+    // 技術料を打ち終えた直後の Enter も保存にする（打ち直して Enter が自然なため）
+    if (e.target && (e.target.id === "gigiNon" || e.target.id === "gigiVac")) e.target.blur();
+    save(false);
+    return;
+  }
+  if (typing(e)) return;
+  if (e.key === "1") { e.preventDefault(); toggle("check"); }
+  if (e.key === "2") { e.preventDefault(); toggle("card"); }
+});
+
+elInv.focus();
+</script>
+</body>
+</html>
