@@ -147,20 +147,29 @@ async function loadMasterData() {
 
   // 失敗しても間を置いてやり直す。
   // GASの応答URL（user_content_key）は短時間で失効するため、取り直せば通ることが多い。
-  // 間隔を少しずつ広げて、混み合っているときに追い打ちをかけないようにする。
-  const RETRY_WAIT_MS = [700, 1500];
-  for (let attempt = 0; attempt <= RETRY_WAIT_MS.length; attempt++) {
+  // 1回ごとに打ち切り時間を決めてあるので、最悪でも30秒ほどで結論が出る。
+  const ATTEMPTS = [
+    { timeout: 7000,  wait: 700  },
+    { timeout: 9000,  wait: 1500 },
+    { timeout: 11000, wait: 0    }
+  ];
+  for (let attempt = 0; attempt < ATTEMPTS.length; attempt++) {
     try {
-      data = await fetchMasterOnce();
+      data = await fetchMasterOnce(ATTEMPTS[attempt].timeout);
       break;
     } catch (e) {
       lastErr = e;
-      if (attempt < RETRY_WAIT_MS.length) {
-        showLoading("読み込みに失敗しました。再試行中…（" + (attempt + 2) + "回目）");
-        await new Promise(function (r) { setTimeout(r, RETRY_WAIT_MS[attempt]); });
+      if (attempt < ATTEMPTS.length - 1) {
+        // 何が起きているかをその場に出す。原因が分からないまま待たされるのを避ける。
+        showLoadingError(
+          "読み込みに失敗しました。再試行中…（" + (attempt + 2) + "回目 / 全" + ATTEMPTS.length + "回）",
+          e && e.message ? e.message : String(e)
+        );
+        await new Promise(function (r) { setTimeout(r, ATTEMPTS[attempt].wait); });
       }
     }
   }
+  clearLoadingError();
 
   if (!data) {
     // ここに来るのは通信・サーバ側の失敗だけ。画面描画の失敗と混ざらないようにしている。
@@ -248,18 +257,38 @@ function describeCacheAge(savedAt) {
 // リダイレクトそのものをキャッシュしてしまうことがある。すると次回以降は
 // 失効済みのURLへ直行して 404 になり「接続エラー」に見える。
 // URLを毎回変え、キャッシュを使わない指定にして、これを避ける。
-async function fetchMasterOnce() {
+// タイムアウトを付けて取得する。
+// 付けないと、応答が返らないときブラウザが諦めるまで数十秒〜数分待たされ、
+// 乳白色の読み込み画面のまま何も操作できなくなる（現場で実際に起きた）。
+async function fetchMasterOnce(timeoutMs) {
+  const limit = timeoutMs || 8000;
   const url = GAS_URL + "?action=getMaster&_=" + Date.now();
-  const res = await fetch(url, { cache: "no-store" });
-  if (!res.ok) {
-    throw new Error("HTTP " + res.status + (res.statusText ? " " + res.statusText : ""));
+  let ctrl = null, timer = null;
+  if (typeof AbortController !== "undefined") {
+    ctrl = new AbortController();
+    timer = setTimeout(function () { ctrl.abort(); }, limit);
   }
-  const data = await res.json();
-  if (data.result !== "success") {
-    throw new Error(data.message || "サーバが失敗を返しました");
+  try {
+    const opt = { cache: "no-store" };
+    if (ctrl) opt.signal = ctrl.signal;
+    const res = await fetch(url, opt);
+    if (!res.ok) {
+      throw new Error("HTTP " + res.status + (res.statusText ? " " + res.statusText : ""));
+    }
+    const data = await res.json();
+    if (data.result !== "success") {
+      throw new Error(data.message || "サーバが失敗を返しました");
+    }
+    data.products = unpackProducts(data);
+    return data;
+  } catch (e) {
+    if (e && e.name === "AbortError") {
+      throw new Error("応答がありません（" + Math.round(limit / 1000) + "秒で打ち切り）");
+    }
+    throw e;
+  } finally {
+    if (timer) clearTimeout(timer);
   }
-  data.products = unpackProducts(data);
-  return data;
 }
 
 // サーバから来た商品マスタを、これまで通りのオブジェクトの配列に戻す。
@@ -2316,7 +2345,49 @@ function showLoading(text) {
   document.getElementById("loading").classList.remove("hidden");
 }
 function hideLoading() {
+  clearLoadingError();
   document.getElementById("loading").classList.add("hidden");
+}
+
+// 読み込み中の画面に、失敗の中身と「再読み込み」ボタンを出す。
+// 読み込み画面は全面を覆っていて下の操作を受け付けないので、ここに出さないと
+// 何が起きているのか分からないまま待つしかなくなる。
+function clearLoadingError() {
+  const panel = document.getElementById("loadingError");
+  if (panel && panel.parentNode) panel.parentNode.removeChild(panel);
+}
+
+function showLoadingError(text, detail) {
+  const box = document.getElementById("loading");
+  if (!box) return;
+  box.classList.remove("hidden");
+  const label = document.getElementById("loadingText");
+  if (label) label.textContent = text || "読み込みに失敗しました";
+
+  let panel = document.getElementById("loadingError");
+  if (!panel) {
+    panel = document.createElement("div");
+    panel.id = "loadingError";
+    panel.style.cssText =
+      "max-width:520px;margin:0 16px;padding:12px 14px;background:#fff;" +
+      "border:1px solid #d8ddd8;border-radius:8px;font-size:13px;line-height:1.8;" +
+      "color:#333;text-align:left;box-shadow:0 2px 8px rgba(0,0,0,.08)";
+    box.appendChild(panel);
+  }
+  panel.innerHTML = "";
+
+  const msg = document.createElement("div");
+  msg.style.cssText = "white-space:pre-wrap;word-break:break-all";
+  msg.textContent = detail || "";
+  panel.appendChild(msg);
+
+  const btn = document.createElement("button");
+  btn.textContent = "再読み込み";
+  btn.style.cssText =
+    "margin-top:10px;padding:10px 18px;font-size:14px;border-radius:6px;" +
+    "border:1px solid #1a5c3a;background:#1a5c3a;color:#fff;cursor:pointer";
+  btn.addEventListener("click", function () { location.reload(); });
+  panel.appendChild(btn);
 }
 function showToast(msg, type) {
   const t = document.createElement("div");

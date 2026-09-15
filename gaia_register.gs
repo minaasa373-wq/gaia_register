@@ -116,16 +116,10 @@ function doGet(e) {
     const action = (e && e.parameter && e.parameter.action) || "";
 
     if (action === "getMaster") {
-      const ss = SpreadsheetApp.getActiveSpreadsheet();
-      return jsonResponse({
-        result: "success",
-        // cols＋配列形式で返す（転送量を約半分に減らすため）。
-        // 旧いクライアントは cols を見ないので、移行中は productsObjects も併送する
-        // …ということはせず、クライアント側で cols の有無を見て両対応にしている。
-        cols:     PRODUCT_FIELDS,
-        products: packProducts(getAllProducts(ss)),
-        staff:    getStaff(ss)
-      });
+      // 組み立て済みのJSONをそのまま返す（下の getMasterJson_ がキャッシュを見る）
+      return ContentService
+        .createTextOutput(getMasterJson_(SpreadsheetApp.getActiveSpreadsheet()))
+        .setMimeType(ContentService.MimeType.JSON);
     }
 
     // 【過去ログビューア】販売記録の検索（読み取り専用）
@@ -139,6 +133,96 @@ function doGet(e) {
 
   } catch (err) {
     return jsonResponse({ result: "error", message: err.toString() });
+  }
+}
+
+// ===== マスタ応答のキャッシュ =====
+// getMaster は毎回スプレッドシート全体を開き、商品マスタと薬品・物品マスタの
+// 1,300件あまりを読んで約265KBを返す。台数ぶん同じことをするのは無駄なので、
+// 組み立て済みのJSONを CacheService に置いて使い回す。
+//
+// CacheService は1キー100KBまで。日本語はUTF-8で1文字3バイトになるため、
+// 25,000文字ずつに割って複数キーに入れる（メタキーに個数を持つ）。
+// マスタを直したときは、メニューの「マスタのキャッシュを破棄」で即反映できる。
+const MASTER_CACHE_PREFIX = "gaia_master_json_v1_";
+const MASTER_CACHE_TTL    = 1800;    // 30分
+const MASTER_CACHE_CHUNK  = 25000;   // 文字数
+
+function buildMasterJson_(ss) {
+  return JSON.stringify({
+    result: "success",
+    // cols＋配列形式で返す（転送量を約半分に減らすため）。
+    // クライアント側で cols の有無を見て、旧形式とも両対応にしている。
+    cols:     PRODUCT_FIELDS,
+    products: packProducts(getAllProducts(ss)),
+    staff:    getStaff(ss)
+  });
+}
+
+function getMasterJson_(ss) {
+  let cache = null;
+  try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
+
+  // ---- 読む ----
+  if (cache) {
+    try {
+      const n = parseInt(cache.get(MASTER_CACHE_PREFIX + "meta") || "0", 10);
+      if (n > 0) {
+        const keys = [];
+        for (let i = 0; i < n; i++) keys.push(MASTER_CACHE_PREFIX + i);
+        const got = cache.getAll(keys);
+        let joined = "";
+        let ok = true;
+        for (let i = 0; i < n; i++) {
+          const part = got[MASTER_CACHE_PREFIX + i];
+          if (part === null || part === undefined) { ok = false; break; }
+          joined += part;
+        }
+        // 途中のキーだけ期限切れになっていることがあるので、揃ったときだけ使う
+        if (ok && joined) return joined;
+      }
+    } catch (e) { /* キャッシュが読めなくても本体から組み立てれば済む */ }
+  }
+
+  // ---- 組み立てる ----
+  const json = buildMasterJson_(ss);
+
+  // ---- 置く ----
+  if (cache) {
+    try {
+      const parts = [];
+      let i = 0;
+      while (i < json.length) {
+        let end = Math.min(i + MASTER_CACHE_CHUNK, json.length);
+        // サロゲートペアの途中で切らない
+        const code = json.charCodeAt(end - 1);
+        if (end < json.length && code >= 0xD800 && code <= 0xDBFF) end += 1;
+        parts.push(json.substring(i, end));
+        i = end;
+      }
+      const map = {};
+      parts.forEach(function (part, idx) { map[MASTER_CACHE_PREFIX + idx] = part; });
+      map[MASTER_CACHE_PREFIX + "meta"] = String(parts.length);
+      cache.putAll(map, MASTER_CACHE_TTL);
+    } catch (e) { /* 置けなくても動作に支障はない */ }
+  }
+  return json;
+}
+
+// メニュー：マスタを直したあとに即反映させたいとき
+function clearMasterCache() {
+  const ui = SpreadsheetApp.getUi();
+  try {
+    const cache = CacheService.getScriptCache();
+    const n = parseInt(cache.get(MASTER_CACHE_PREFIX + "meta") || "0", 10);
+    const keys = [MASTER_CACHE_PREFIX + "meta"];
+    for (let i = 0; i < Math.max(n, 20); i++) keys.push(MASTER_CACHE_PREFIX + i);
+    cache.removeAll(keys);
+    ui.alert("マスタのキャッシュを破棄しました",
+             "次にiPadで読み込んだときに、いまのマスタが反映されます。",
+             ui.ButtonSet.OK);
+  } catch (e) {
+    ui.alert("エラー", e.message, ui.ButtonSet.OK);
   }
 }
 
@@ -731,6 +815,7 @@ function onOpen() {
     .addItem("月次集計を実行", "promptMonthlyReport")
     .addItem(OWNER_REPORT_LABEL + " 明細を出力", "promptOwnerReport")
     .addSeparator()
+    .addItem("マスタのキャッシュを破棄", "clearMasterCache")
     .addItem("初期セットアップ", "setupSheets")
     .addToUi();
 }
