@@ -45,7 +45,29 @@ async function doSearch() {
     if (from)   params.set("from", from);
     if (to)     params.set("to", to);
 
-    const res = await fetch(GAS_URL + "?" + params.toString());
+    // レジ側と同じ対策をここにも入れる。
+    // GASの /exec は毎回 script.googleusercontent.com の使い捨てURLへ転送される。
+    // ブラウザが転送そのものをキャッシュすると、失効済みURLへ直行して404になる。
+    // URLを毎回変え、キャッシュを使わない指定にして避ける。
+    // 応答が返らないときに延々と待たされないよう、打ち切りも付ける。
+    params.set("_", String(Date.now()));
+    let ctrl = null, timer = null;
+    if (typeof AbortController !== "undefined") {
+      ctrl = new AbortController();
+      timer = setTimeout(function () { ctrl.abort(); }, 15000);
+    }
+    let res;
+    try {
+      const opt = { cache: "no-store" };
+      if (ctrl) opt.signal = ctrl.signal;
+      res = await fetch(GAS_URL + "?" + params.toString(), opt);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+    if (!res.ok) {
+      resultsEl.innerHTML = `<div class="result-status warn">通信エラー：HTTP ${res.status}${res.status === 404 ? "（GASの応答URLが失効しています。ページを再読み込みしてください）" : ""}</div>`;
+      return;
+    }
     const data = await res.json();
 
     if (data.result !== "success") {
@@ -54,7 +76,10 @@ async function doSearch() {
     }
     renderResults(data);
   } catch (e) {
-    resultsEl.innerHTML = `<div class="result-status warn">通信エラー：${escapeHtml(e.message)}</div>`;
+    const msg = (e && e.name === "AbortError")
+      ? "応答がありません（15秒で打ち切りました）。もう一度お試しください"
+      : ("通信エラー：" + (e && e.message ? e.message : String(e)));
+    resultsEl.innerHTML = `<div class="result-status warn">${escapeHtml(msg)}</div>`;
   } finally {
     isSearching = false;
     btn.disabled = false;
