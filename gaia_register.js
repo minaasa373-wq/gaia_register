@@ -851,12 +851,14 @@ function getCategoryColor(category, override) {
     // 薬・物販系（薬品・物品マスタ）
     "処方薬": "#2E9E75",
     "処方薬（液剤・シロップ）": "#378ADD",
-    "処方薬（外用・軟膏）": "#EF9F27",
+    "処方薬（外用薬）": "#EF9F27",
+    "処方薬（外用・軟膏）": "#EF9F27",  // 旧カテゴリ名（移行期の互換用）
     "処方薬（点眼薬）": "#7F77DD",
     "処方薬（注射）": "#D4537E",
     "駆虫薬": "#1D9E75",
     "ワクチン・駆虫薬": "#1D9E75",  // 旧カテゴリ名（移行期の互換用）
-    "フード・サプリ": "#C08A2E",
+    "フード": "#C08A2E",
+    "フード・サプリ": "#C08A2E",     // 旧カテゴリ名（移行期の互換用）
     "消耗品・医療材料": "#888780",
     "計算式必要": "#C8553D"
   };
@@ -926,6 +928,10 @@ function addToCart(product, qty, staffRole, extra) {
       masterPrice: product.price,  // 編集で変わらない元単価
       gigi: product.gigi || 0      // マスタの技術料
     };
+    // gigi:fixed の品目は、編集パネルで単価を直しても技術料を動かさない。
+    // これまで金額入力を伴う経路（formula: / gigi:same）でしか印を立てておらず、
+    // 普通のタイルから入れた品目ではマーカーが黙って無視されていた。
+    if (hasGigiFixed(product)) item.isGigiFixed = true;
     if (extra) Object.assign(item, extra);
     state.cart.push(finalizeNewCartItem(item));
   }
@@ -1671,6 +1677,9 @@ function confirmGroupDisc() {
     showToast("割引額を入力してください", "error");
     return;
   }
+  // 明細は印刷の都合で11件まで。ここだけ上限チェックが抜けていて、
+  // 12件目の団体割引が積めてしまい明細書からあふれていた。
+  if (!canAddItem()) return;
   // finalizeNewCartItem は通さない。割引は返品ではないので、
   // 返品モードON中に団割を押しても返品モードを消費しないようにする。
   state.cart.push({
