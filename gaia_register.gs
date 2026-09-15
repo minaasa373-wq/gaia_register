@@ -795,7 +795,7 @@ function setupSheets() {
     "・商品マスタ（診療行為）\n" +
     "・薬品・物品マスタ（薬/物販）\n" +
     "・担当者（6名入り）\n" +
-    "・販売記録（15列版）\n" +
+    "・販売記録（" + REC_COLS.length + "列版）\n" +
     "・技術料台帳（7列版）\n" +
     "・ワクチン台帳（5列版）"
   );
@@ -998,20 +998,58 @@ function checkGigiLedger() {
   ui.alert(done);
 }
 
+// ===== 販売記録を1回だけ読んで使い回す =====
+// 月次集計は販売記録を3回まるごと読んでいた（現在3,587行×18列＝約6.5万セル×3）。
+// 月におよそ1,500行増えるので、放っておくと実行時間の上限（6分）に効いてくる。
+// 読んだ結果をこの形で持ち回り、各関数は渡されたらそれを使う（渡されなければ従来どおり自分で読む）。
+function readRecords_(ss) {
+  const sheet = ss.getSheetByName(SHEET_RECORDS);
+  if (!sheet || sheet.getLastRow() < 2) {
+    return { sheet: sheet || null, cm: null, C: {}, rows: [] };
+  }
+  const cm = buildColMap(sheet, null);
+  return {
+    sheet: sheet,
+    cm: cm,
+    C: cm.idx,
+    rows: sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues()
+  };
+}
+
 // ===== カード決済の伝票番号を集める =====
 // 販売記録で「カード決済」にチェックが付いている行の伝票番号を集合で返す。
 // 月次集計で技術料を当月から除外するために使う。
-function getCardInvoiceNos(ss) {
+function getCardInvoiceNos(ss, rec) {
   const set = {};
-  const sheet = ss.getSheetByName(SHEET_RECORDS);
-  if (!sheet || sheet.getLastRow() < 2) return set;
-  const cm = buildColMap(sheet, null);
-  const C = cm.idx;
+  rec = rec || readRecords_(ss);
+  if (!rec.sheet || !rec.rows.length) return set;
+  const C = rec.C;
   if (!("カード決済" in C) || !("伝票番号" in C)) return set;  // 列が未追加なら何もしない
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues();
+  const rows = rec.rows;
   rows.forEach(function (r) {
     if (!isChecked(r[C["カード決済"]])) return;
-    const no = String(r[C["伝票番号"]] || "").trim();
+    // 伝票番号はシートの書式次第で 3081（数値）にも "003081"（文字列）にもなる。
+    // 照合する相手（技術料台帳）と揃うように normInvoice で正規化してから持つ。
+    const no = normInvoice(r[C["伝票番号"]]);
+    if (no) set[no] = true;
+  });
+  return set;
+}
+
+// ===== 販売記録に存在する伝票番号を集める =====
+// 技術料台帳に残っている「販売記録が消された行」（＝孤立行）を見分けるために使う。
+// 二重送信チェックで見つかった重複を販売記録から手で消すと、技術料台帳側の行は
+// 残ったままになる。整合チェックはグレーに塗るだけで消さないので、
+// そのままでは月次集計が実体のない技術料を給与に乗せてしまう。
+// 伝票番号の列だけを読むので、全件でも軽い。
+function getRecordInvoiceNos(ss, rec) {
+  const set = {};
+  rec = rec || readRecords_(ss);
+  if (!rec.sheet || !rec.rows.length) return set;
+  if (!("伝票番号" in rec.C)) return set;
+  const col = rec.C["伝票番号"];
+  rec.rows.forEach(function (r) {
+    const no = normInvoice(r[col]);
     if (no) set[no] = true;
   });
   return set;
@@ -1024,18 +1062,17 @@ function getCardInvoiceNos(ss) {
 //   - 確認済み✅    → その月の技術料として集計する
 //   - どちらも無し  → 会計の確認がまだ終わっていないとみなし、集計から外す
 // 戻り値：{ nos: {伝票番号: true}, rows: [{no, date}], count }
-function getUncheckedRecords(ss, year, month) {
+function getUncheckedRecords(ss, year, month, rec) {
   const empty = { nos: {}, rows: [], count: 0 };
-  const sheet = ss.getSheetByName(SHEET_RECORDS);
-  if (!sheet || sheet.getLastRow() < 2) return empty;
+  rec = rec || readRecords_(ss);
+  if (!rec.sheet || !rec.rows.length) return empty;
 
-  const cm = buildColMap(sheet, null);
-  const C = cm.idx;
+  const C = rec.C;
   // 列が未追加の環境では従来通り（何も除外しない）
   if (!("確認済み" in C) || !("カード決済" in C) ||
       !("伝票番号" in C) || !("会計日" in C)) return empty;
 
-  const rows = sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues();
+  const rows = rec.rows;
   const nos = {};
   const list = [];
   const checkedRows = [];      // チェック済みの行番号（色を消す対象）
@@ -1219,13 +1256,12 @@ function markCardCarryover(ss, carryRows, year, month) {
 // 指定月のカード決済✅付きレコードを台帳へコピーする。
 // 伝票番号で重複チェックするので、月次集計を何度実行しても二重に増えない。
 // 戻り値：今回追加した件数
-function writeCardLedger(ss, year, month) {
-  const rec = ss.getSheetByName(SHEET_RECORDS);
-  if (!rec || rec.getLastRow() < 2) return 0;
-  const cm = buildColMap(rec, null);
-  const C = cm.idx;
+function writeCardLedger(ss, year, month, recData) {
+  recData = recData || readRecords_(ss);
+  if (!recData.sheet || !recData.rows.length) return 0;
+  const C = recData.C;
   if (!("カード決済" in C)) return 0;
-  const rows = rec.getRange(2, 1, rec.getLastRow() - 1, cm.count).getValues();
+  const rows = recData.rows;
 
   // 台帳シート（無ければ作成）
   let ledger = ss.getSheetByName(SHEET_CARD_LEDGER);
@@ -1248,7 +1284,7 @@ function writeCardLedger(ss, year, month) {
   if (ledger.getLastRow() >= 2 && ("伝票番号" in LC)) {
     const ex = ledger.getRange(2, 1, ledger.getLastRow() - 1, lcm.count).getValues();
     ex.forEach(function (r) {
-      const no = String(r[LC["伝票番号"]] || "").trim();
+      const no = normInvoice(r[LC["伝票番号"]]);
       if (no) already[no] = true;
     });
   }
@@ -1258,7 +1294,7 @@ function writeCardLedger(ss, year, month) {
     if (!isChecked(r[C["カード決済"]])) return;
     const d = parseVisitDate(r[C["会計日"]]);
     if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
-    const no = String(r[C["伝票番号"]] || "").trim();
+    const no = normInvoice(r[C["伝票番号"]]);
     if (!no || already[no]) return;
     already[no] = true;
 
@@ -1340,23 +1376,42 @@ function generateMonthlyGigiReport(year, month) {
 
   // カード・電子決済分は振込後に給与加算するルールのため、当月の技術料からは除外する。
   // （売上は販売記録側に残るので、そちらには影響しない）
-  const cardNos = getCardInvoiceNos(ss);
+  // 販売記録はここで1回だけ読み、以降の判定すべてで使い回す
+  const recData = readRecords_(ss);
+  const cardNos = getCardInvoiceNos(ss, recData);
 
   // 「確認済み」にも「カード決済」にもチェックが無い会計は、確認作業が
   // 終わっていないものとして当月の集計から外す。
   // 販売記録に見つからない伝票（孤立行）はここに入らないため従来通り集計される。
   // そちらは整合チェックのグレー行で検出する。
-  const unchecked = getUncheckedRecords(ss, year, month);
+  const unchecked = getUncheckedRecords(ss, year, month, recData);
+
+  // 販売記録に残っている伝票番号の一覧。
+  // 技術料台帳にあって販売記録に無い行（＝販売記録を手で消した跡）は、
+  // 実体のない技術料なので給与に乗せない。
+  const recNos = getRecordInvoiceNos(ss, recData);
+  const hasRecNos = Object.keys(recNos).length > 0;   // 読めなかったときは除外しない
 
   const allData = ledger.getRange(2, 1, ledger.getLastRow() - 1, 7).getValues();
   let cardExcluded = 0;
   let uncheckedExcluded = 0;
+  let orphanExcluded = 0;
+  let orphanAmount = 0;
+  const orphanNos = [];
   const filtered = allData.filter(row => {
     const d = parseVisitDate(row[1]);
     if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return false;
-    const no = String(row[2] || "").trim();   // C列：伝票番号
+    const no = normInvoice(row[2]);   // C列：伝票番号（正規化して突き合わせる）
+    // 販売記録から消えた伝票＝二重送信を消した跡。整合チェックではグレーに
+    // 塗られるだけで残るため、ここで給与から外す。
+    if (hasRecNos && no && !recNos[no]) {
+      orphanExcluded++;
+      orphanAmount += (Number(row[4]) || 0) + (Number(row[5]) || 0);
+      if (orphanNos.length < 10) orphanNos.push(no);
+      return false;
+    }
     if (no && cardNos[no]) { cardExcluded++; return false; }
-    if (no && unchecked.nos[normInvoice(no)]) { uncheckedExcluded++; return false; }
+    if (no && unchecked.nos[no]) { uncheckedExcluded++; return false; }
     return true;
   });
 
@@ -1367,7 +1422,8 @@ function generateMonthlyGigiReport(year, month) {
     SpreadsheetApp.getUi().alert(
       year + "年" + month + "月の集計対象データがありません。" +
       (cardExcluded > 0 ? "\n（カード決済として除外：" + cardExcluded + "件）" : "") +
-      (uncheckedExcluded > 0 ? "\n（確認済みチェックが無く除外：" + uncheckedExcluded + "件）" : "")
+      (uncheckedExcluded > 0 ? "\n（確認済みチェックが無く除外：" + uncheckedExcluded + "件）" : "") +
+      (orphanExcluded > 0 ? "\n（販売記録に無い行として除外：" + orphanExcluded + "件）" : "")
     );
     return;
   }
@@ -1381,6 +1437,9 @@ function generateMonthlyGigiReport(year, month) {
     vData.forEach(row => {
       const d = parseVisitDate(row[1]); // B列：会計日
       if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
+      // 技術料台帳と同じ理由で、販売記録から消えた伝票は件数に数えない
+      const vno = normInvoice(row[2]);           // C列：伝票番号
+      if (hasRecNos && vno && !recNos[vno]) return;
       const name = String(row[3] || "").trim();  // D列：ワクチン名
       const count = Number(row[4]) || 0;          // E列：件数
       if (name && count > 0) {
@@ -1689,7 +1748,7 @@ function generateMonthlyGigiReport(year, month) {
   // ---- 12. カード決済台帳へ転記（伝票番号で重複チェック済み） ----
   let cardCopied = 0;
   try {
-    cardCopied = writeCardLedger(ss, year, month);
+    cardCopied = writeCardLedger(ss, year, month, recData);
   } catch (e) {
     SpreadsheetApp.getUi().alert("カード決済台帳への転記でエラーが発生しました：\n" + e.message);
   }
@@ -1720,6 +1779,13 @@ function generateMonthlyGigiReport(year, month) {
     "\n" +
     "カード決済（当月の技術料から除外）: " + cardExcluded + "件\n" +
     "確認済みチェックが無く除外: " + uncheckedExcluded + "件\n" +
+    (orphanExcluded > 0
+      ? "販売記録に無い行として除外: " + orphanExcluded + "件（技術料 ¥" +
+        orphanAmount.toLocaleString() + "）\n" +
+        "　└ 伝票 " + orphanNos.join(", ") + (orphanExcluded > orphanNos.length ? " ほか" : "") + "\n" +
+        "　　二重送信を販売記録から消した跡です。技術料台帳では整合チェックでグレーに\n" +
+        "　　塗られます。不要なら台帳側の行も削除してください。\n"
+      : "") +
     "カード決済台帳へ新たに転記: " + cardCopied + "件\n" +
     "繰越として今回の給与に加算: " + carryMarked + "件"
   );
@@ -1857,39 +1923,42 @@ function generateOwnerReport(year, month) {
       itemCount++;
     });
   });
+  // setValues は行を自動追加しないので、先にシートを広げておく
+  // （新規スプレッドシートは既定1000行。明細が増えると届く）
+  ensureSheetRows(sheet, rowNum + out.length);
   sheet.getRange(rowNum, 1, out.length, headers.length).setValues(out);
   const lastItemRow = rowNum + out.length - 1;
-  rowNum = lastItemRow + 1;
 
   // ---- 合計 ----
-  sheet.appendRow(new Array(headers.length).fill(""));
-  rowNum++;
-  const sumRow = rowNum;
+  // 明細と切り離すため空行を1行はさむ。
+  // ここで appendRow を使ってはいけない。appendRow は「中身のある最終行の次」に
+  // 書くので、空文字だけの配列を渡しても最終行が進まず、以降の行が1つずつ
+  // 実際とずれる（月次集計で同じ不具合を踏んだ）。行番号を指定して書く。
+  const sumRow = lastItemRow + 2;
   const amountCol = headers.indexOf("金額") + 1;
   const cl = columnToLetter(amountCol);
-  const totalLine = new Array(headers.length).fill("");
-  totalLine[0] = "合計（税抜）";
-  totalLine[amountCol - 1] = "=SUM(" + cl + "2:" + cl + lastItemRow + ")";
-  sheet.appendRow(totalLine);
-  rowNum++;
 
   // 販売記録の「合計」は税込。突き合わせできるよう並べて出す。
   let cardTotal = 0, cashTotal = 0;
   slips.forEach(function (s) { s.card ? (cardTotal += s.total) : (cashTotal += s.total); });
   const grand = cardTotal + cashTotal;
 
-  [["合計（税込）", grand],
-   ["　うちカード決済", cardTotal],
-   ["　うち現金など", cashTotal]].forEach(function (pair) {
+  const summary = [
+    ["合計（税抜）",      "=SUM(" + cl + "2:" + cl + lastItemRow + ")"],
+    ["合計（税込）",      grand],
+    ["　うちカード決済",  cardTotal],
+    ["　うち現金など",    cashTotal]
+  ];
+  summary.forEach(function (pair, i) {
     const line = new Array(headers.length).fill("");
     line[0] = pair[0];
     line[amountCol - 1] = pair[1];
-    sheet.appendRow(line);
-    rowNum++;
+    putRow(sheet, sumRow + i, line, headers.length);
   });
+  rowNum = sumRow + summary.length;
 
-  sheet.getRange(sumRow, 1, 4, headers.length).setFontWeight("bold");
-  sheet.getRange(sumRow, 1, 4, headers.length).setBackground("#e8f5e9");
+  sheet.getRange(sumRow, 1, summary.length, headers.length).setFontWeight("bold");
+  sheet.getRange(sumRow, 1, summary.length, headers.length).setBackground("#e8f5e9");
   sheet.getRange(2, amountCol, rowNum - 2, 1).setNumberFormat("#,##0");
   sheet.getRange(2, headers.indexOf("単価") + 1, rowNum - 2, 1).setNumberFormat("#,##0");
 
@@ -2409,7 +2478,7 @@ function uiLookupSlip(invoiceNo) {
     }
 
     const hits = rows.map(function (row) { return buildSlipView_(ss, rec, row); });
-    t.lap("台帳の照会");
+    t.lap("組み立て");
     return { result: "success", hits: hits, ms: t.total(), laps: t.marks() };
   } catch (e) {
     return { result: "error", message: e.message };
