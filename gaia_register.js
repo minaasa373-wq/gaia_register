@@ -147,11 +147,27 @@ async function loadMasterData() {
 
   // 失敗しても間を置いてやり直す。
   // GASの応答URL（user_content_key）は短時間で失効するため、取り直せば通ることが多い。
-  // 1回ごとに打ち切り時間を決めてあるので、最悪でも30秒ほどで結論が出る。
+  // 1回ごとに打ち切り時間を決めてあるので、最悪でも40秒ほどで結論が出る。
+  //
+  // 【2026-09 見直し】以前は 7秒→9秒→11秒 の3回だった。
+  // 実測（DevTools）で分かったこと：
+  //   ・1回目が7秒で打ち切られ、その直後の2回目が成功していた
+  //   ・GASの入口（302）は1.66秒で返っている。遅いのはマスタの組み立て
+  //   ・本体は36KBで届く（256KBのJSONがgzipされている）。転送は遅くない
+  // つまり1回目を打ち切ったあともGAS側は走り続けてキャッシュを埋め、
+  // 2回目がそれを拾っていた。1回目の7秒が短すぎただけだった。
+  //
+  // abort() で止まるのはブラウザ側だけで、GASの実行は止まらない。
+  // Apps Scriptは同じユーザーの同時実行を順番待ちさせるので、
+  // 短く刻んで何度も投げると、後の試行ほど前の実行の後ろに並んで不利になる。
+  // そのため「回数を減らして1回を長く」に変えた。
+  // 間の3秒は、打ち切った実行が終わるのを待つための時間。
+  //
+  // なお会計送信（printBtnInsuranceTimer）は30秒で切っている。
+  // マスタ読み込みのほうが重い処理なので、それより短くしない。
   const ATTEMPTS = [
-    { timeout: 7000,  wait: 700  },
-    { timeout: 9000,  wait: 1500 },
-    { timeout: 11000, wait: 0    }
+    { timeout: 25000, wait: 3000 },
+    { timeout: 12000, wait: 0    }
   ];
   for (let attempt = 0; attempt < ATTEMPTS.length; attempt++) {
     try {
@@ -261,7 +277,7 @@ function describeCacheAge(savedAt) {
 // 付けないと、応答が返らないときブラウザが諦めるまで数十秒〜数分待たされ、
 // 乳白色の読み込み画面のまま何も操作できなくなる（現場で実際に起きた）。
 async function fetchMasterOnce(timeoutMs) {
-  const limit = timeoutMs || 8000;
+  const limit = timeoutMs || 25000;
   const url = GAS_URL + "?action=getMaster&_=" + Date.now();
   let ctrl = null, timer = null;
   if (typeof AbortController !== "undefined") {
