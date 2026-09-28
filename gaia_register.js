@@ -2166,6 +2166,11 @@ let printBtnInsuranceTimer = null; // 強制復帰の保険タイマー
 let printAbortCtrl = null;       // 進行中の送信を打ち切るための AbortController
 // 記録が完了した会計の伝票番号。カートを空にするまでボタンを押せなくして二重記録を防ぐ。
 let recordedInvoiceNo = null;
+// 送信中の会計に付けた使い捨てのID（2026-09 二重記録対策②）。
+// 押し直しても同じIDで送るので、記録は届いたのに返事だけ失われた場合でも
+// GASが「記録済み」と判断して1回目の伝票番号を返す。
+// 内容（fp）が変わったら別の会計とみなして新しいIDにする。カートを空にしたら破棄。
+let pendingSubmit = null;   // { id, fp }
 // 直近のマスタ読み込み失敗の内容（右上の接続表示をタップすると見られる）
 let lastLoadError = null;
 
@@ -2217,11 +2222,57 @@ function releasePrintLock() {
   } else {
     setPrintBtnBusy(false);
   }
+  disarmPrintInsurance();
+  printAbortCtrl = null;
+}
+
+// 30秒の保険タイマーを仕掛ける（送信の打ち切りと、ボタンの強制復帰）
+// ※GASのコールドスタートで数秒かかることがあるため、短すぎる値にはしない
+// 通信そのものも打ち切る。放置すると、復帰後に押し直した送信と
+// 遅れて届いた元の送信の両方が記録され、二重記録になる。
+function armPrintInsurance() {
+  disarmPrintInsurance();
+  printAbortCtrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
+  printBtnInsuranceTimer = setTimeout(() => {
+    if (printAbortCtrl) { try { printAbortCtrl.abort(); } catch (e) {} }
+    releasePrintLock();
+    showToast("処理がタイムアウトしました。記録されたか売上記録シートを確認してください", "error");
+  }, 30000);
+}
+function disarmPrintInsurance() {
   if (printBtnInsuranceTimer) {
     clearTimeout(printBtnInsuranceTimer);
     printBtnInsuranceTimer = null;
   }
-  printAbortCtrl = null;
+}
+
+// 同じ内容の会計が記録済みだったときの確認。"print" / "record" / "cancel" を返す。
+// 標準の確認ダイアログはOK/キャンセルの2択なので、2段階で聞く。
+// 「別の会計として記録」は二重記録そのものなので、必ず2回目の確認を通す。
+function askDuplicateChoice(dup) {
+  const sec = Number(dup.secondsAgo) || 0;
+  const when = sec < 60 ? "1分以内" : Math.floor(sec / 60) + "分前";
+  const first = confirm(
+    when + "に、同じ内容の会計が記録されています（No. " + dup.invoiceNo + "）。\n\n" +
+    "印刷がうまくいかず、もう一度入力して押した場合は\n" +
+    "［OK］→ No. " + dup.invoiceNo + " のまま明細書を印刷します（記録は増えません）\n\n" +
+    "本当に別の会計の場合は［キャンセル］を押してください。"
+  );
+  if (first) return "print";
+  const second = confirm(
+    "同じ内容を、別の会計としてもう1件記録しますか？\n\n" +
+    "［OK］→ 新しい番号で記録して印刷します\n" +
+    "［キャンセル］→ 何もせずに戻ります（入力した内容は残ります）"
+  );
+  return second ? "record" : "cancel";
+}
+
+// 使い捨ての送信IDを作る
+function newSubmitId() {
+  try {
+    if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID().replace(/-/g, "");
+  } catch (e) {}
+  return Date.now().toString(36) + Math.random().toString(36).slice(2, 12);
 }
 
 async function doPrint() {
@@ -2234,16 +2285,7 @@ async function doPrint() {
   }
   isPrinting = true;
   setPrintBtnBusy(true);
-  // 保険：30秒経っても復帰していなければ強制復帰（固まり事故防止）
-  // ※GASのコールドスタートで数秒かかることがあるため、短すぎる値にはしない
-  // 通信そのものも打ち切る。放置すると、復帰後に押し直した送信と
-  // 遅れて届いた元の送信の両方が記録され、二重記録になる。
-  printAbortCtrl = (typeof AbortController !== "undefined") ? new AbortController() : null;
-  printBtnInsuranceTimer = setTimeout(() => {
-    if (printAbortCtrl) { try { printAbortCtrl.abort(); } catch (e) {} }
-    releasePrintLock();
-    showToast("処理がタイムアウトしました。記録されたか売上記録シートを確認してください", "error");
-  }, 30000);
+  armPrintInsurance();
 
   try {
     // ---- 1. 先にGASへ記録（採番してもらう） ----
@@ -2253,6 +2295,30 @@ async function doPrint() {
     } catch (e) {
       showToast("記録処理でエラー：" + e.message, "error");
       return;
+    }
+
+    // ---- 1'. 同じ内容の会計が直近に記録済みだった（二重記録対策①）----
+    // GASは書き込まずに前回の伝票番号を返してくる。どうするかは人が選ぶ。
+    if (result.duplicate) {
+      // 確認ダイアログを出している間に30秒の保険タイマーが切れないよう止める
+      disarmPrintInsurance();
+      const choice = askDuplicateChoice(result);
+      if (choice === "print") {
+        // 記録は増やさず、前回の番号で明細書を刷る
+        result = { ok: true, invoiceNo: result.invoiceNo, printOnly: true };
+      } else if (choice === "record") {
+        // 別の会計としてもう1件記録する
+        armPrintInsurance();
+        try {
+          result = await sendToGAS({ allowDuplicate: true });
+        } catch (e) {
+          showToast("記録処理でエラー：" + e.message, "error");
+          return;
+        }
+      } else {
+        showToast("中止しました（内容は残っています）", "error");
+        return;
+      }
     }
 
     if (!result.ok) {
@@ -2274,7 +2340,13 @@ async function doPrint() {
       </div>
     `;
 
-    showToast("スプシに記録しました（No. " + invoiceNo + "）");
+    if (result.printOnly) {
+      showToast("記録済みの No. " + invoiceNo + " で印刷します（記録は増えていません）");
+    } else if (result.alreadyRecorded) {
+      showToast("前回の送信は記録されていました（No. " + invoiceNo + "）。記録は増やさずに印刷します");
+    } else {
+      showToast("スプシに記録しました（No. " + invoiceNo + "）");
+    }
 
     // ---- 3. 会計確定（カートクリア）----
     // 印刷より先に片付ける。window.print() は印刷ダイアログを開いた直後に
@@ -2294,9 +2366,15 @@ async function doPrint() {
 }
 
 // ===== GASに送信 =====
-// 戻り値： { ok: true, invoiceNo: "000123" } / { ok: false }
+// 戻り値：
+//   { ok: true, invoiceNo: "000123" }                    記録できた
+//   { ok: true, invoiceNo, alreadyRecorded: true }        同じ送信IDが記録済みだった（書き込みなし）
+//   { ok: false, duplicate: true, invoiceNo, secondsAgo } 同じ内容が直近に記録済み（書き込みなし）
+//   { ok: false }                                         失敗
 // 伝票番号はサーバが採番するので、送信データには含めない。
-async function sendToGAS() {
+// opts.allowDuplicate: 同じ内容でも別の会計として記録する（人が確認したときだけ）
+async function sendToGAS(opts) {
+  opts = opts || {};
   if (GAS_URL === "YOUR_GAS_URL_HERE") {
     showToast("デモモード：記録は保存されません", "error");
     return { ok: false };
@@ -2341,6 +2419,14 @@ async function sendToGAS() {
     hasFreeInput: state.cart.some(it => it.isFree === true)
   };
 
+  // 送信ID：内容が前回の送信と同じなら同じIDを使う（押し直しを同じ会計と分かるように）
+  const fp = JSON.stringify(data);
+  if (!pendingSubmit || pendingSubmit.fp !== fp) {
+    pendingSubmit = { id: newSubmitId(), fp: fp };
+  }
+  data.submitId = pendingSubmit.id;
+  if (opts.allowDuplicate === true) data.allowDuplicate = true;
+
   try {
     const res = await fetch(GAS_URL, {
       method: "POST",
@@ -2357,7 +2443,10 @@ async function sendToGAS() {
       // 台帳への書き込みだけ失敗した場合。会計自体は記録できているので
       // 印刷は続行し、後で整合チェックが必要なことだけ知らせる。
       if (json.warning) showToast(json.warning, "error");
-      return { ok: true, invoiceNo: json.invoiceNo || "" };
+      return { ok: true, invoiceNo: json.invoiceNo || "", alreadyRecorded: json.alreadyRecorded === true };
+    }
+    if (json.result === "duplicate") {
+      return { ok: false, duplicate: true, invoiceNo: json.invoiceNo || "", secondsAgo: json.secondsAgo };
     }
     throw new Error(json.message || "保存失敗");
   } catch (e) {
@@ -2381,6 +2470,7 @@ function clearAll() {
 }
 
 function clearCart() {
+  pendingSubmit = null;   // 会計が終わった（または全消去した）ので送信IDも破棄
   state.cart = [];
   state.selectedItemId = null;
   returnMode = false;

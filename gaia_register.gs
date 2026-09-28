@@ -188,26 +188,63 @@ function getMasterJson_(ss) {
   const json = buildMasterJson_(ss);
 
   // ---- 置く ----
-  if (cache) {
-    try {
-      const parts = [];
-      let i = 0;
-      while (i < json.length) {
-        let end = Math.min(i + MASTER_CACHE_CHUNK, json.length);
-        // サロゲートペアの途中で切らない
-        const code = json.charCodeAt(end - 1);
-        if (end < json.length && code >= 0xD800 && code <= 0xDBFF) end += 1;
-        parts.push(json.substring(i, end));
-        i = end;
-      }
-      const map = {};
-      parts.forEach(function (part, idx) { map[MASTER_CACHE_PREFIX + idx] = part; });
-      map[MASTER_CACHE_PREFIX + "meta"] = String(parts.length);
-      cache.putAll(map, MASTER_CACHE_TTL);
-    } catch (e) { /* 置けなくても動作に支障はない */ }
-  }
+  putMasterJson_(cache, json);
   return json;
 }
+
+// 組み立て済みJSONをチャンクに割ってキャッシュに置く。
+// getMasterJson_ と warmMasterCache の両方から呼ぶので関数にしてある。
+// （同じ処理を2箇所に書かない：片方だけ直して食い違う事故を過去に起こしている）
+function putMasterJson_(cache, json) {
+  if (!cache || !json) return;
+  try {
+    const parts = [];
+    let i = 0;
+    while (i < json.length) {
+      let end = Math.min(i + MASTER_CACHE_CHUNK, json.length);
+      // サロゲートペアの途中で切らない
+      const code = json.charCodeAt(end - 1);
+      if (end < json.length && code >= 0xD800 && code <= 0xDBFF) end += 1;
+      parts.push(json.substring(i, end));
+      i = end;
+    }
+    const map = {};
+    parts.forEach(function (part, idx) { map[MASTER_CACHE_PREFIX + idx] = part; });
+    map[MASTER_CACHE_PREFIX + "meta"] = String(parts.length);
+    cache.putAll(map, MASTER_CACHE_TTL);
+  } catch (e) { /* 置けなくても動作に支障はない */ }
+}
+
+// ===== マスタキャッシュのウォームアップ（時間主導トリガー用） =====
+// 15分ごとに実行する（時間主導トリガー。GASの選択肢に20分が無いため15分）。
+//
+// 狙い：マスタの組み立て（シート約21,000セルの読み込み）が、
+// 診療中のiPadからの読み込みで走らないようにする。
+// 組み立て済みのものが常にキャッシュにある状態を保てば、
+// レジ側は毎回キャッシュヒットで返ってくる。
+//
+// キャッシュを読まずに必ず組み立て直している理由：
+// getMasterJson_ はキャッシュがあればそれを返すだけで、TTL(30分)を延長しない。
+// 定期的に「あるから何もしない」を繰り返すと、30分でキャッシュが切れて
+// 次のトリガーまでの間だけ冷えた状態になる。そこを踏んだ端末が遅くなる。
+// 毎回組み直して置き直せば、TTLが常に15分以内に更新されるので切れ目が無くなる。
+// （30分おきのトリガーだとTTLと同着になり切れ目が残るので、15分にしている）
+//
+// 副次的な効果：マスタを直しても、最大15分で自動的に反映される。
+// すぐ反映したいときは、これまで通りメニューの「マスタのキャッシュを破棄」を使う。
+//
+// トリガーから呼ばれるので getUi() は使わない（UIが無い文脈で例外になる）。
+function warmMasterCache() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  if (!ss) return;
+
+  let cache = null;
+  try { cache = CacheService.getScriptCache(); } catch (e) { cache = null; }
+  if (!cache) return;
+
+  putMasterJson_(cache, buildMasterJson_(ss));
+}
+
 
 // メニュー：マスタを直したあとに即反映させたいとき
 function clearMasterCache() {
@@ -421,6 +458,88 @@ function ensureRecordSheet(ss) {
   return sheet;
 }
 
+// ===== 二重記録の防止（2026-09） =====
+// 起きていたこと：
+//   印刷画面で「プリンターに出力できませんでした」→ 記録は済んでいるのに
+//   「記録されていない」と思って同じ内容を打ち直し、もう一度送っていた（約40秒後）。
+//   また、記録は届いたのに返事だけ失われると、画面には失敗と出て押し直される。
+// 対策は2つ。どちらも doPost のロック内、書き込みの前に行う。
+//   ① 同じ内容の照合：飼い主名・ペット名・合計・明細がすべて一致する会計が
+//      DUP_WINDOW_MINUTES 以内に記録済みなら、書き込まずに "duplicate" を返す。
+//      レジ側で「前回の番号で印刷だけする／別の会計として記録する」を選ばせる。
+//      判定は「二重送信チェック」メニューと同じ dupKey_ を使う（基準を食い違わせない）。
+//   ② 送信ID：レジは会計ごとに使い捨てのIDを付け、押し直しても同じIDで送る。
+//      記録済みのIDなら書き込まず、1回目の伝票番号をそのまま返す（成功扱い）。
+const SUBMIT_CACHE_PREFIX = "gaia_submit_v1_";
+const SUBMIT_CACHE_TTL    = 21600;   // 6時間（CacheService の上限）
+const DUP_SCAN_ROWS       = 60;      // 照合で見る販売記録の末尾の行数（5分ぶんには十分）
+
+// 「同じ会計」とみなすためのキー。二重送信チェックと記録前の照合で共用する。
+function dupKey_(owner, pet, total, detail) {
+  return [
+    String(owner == null ? "" : owner).trim(),
+    String(pet == null ? "" : pet).trim(),
+    Number(total) || 0,
+    String(detail == null ? "" : detail).trim()
+  ].join("\u0001");
+}
+
+// 送信IDの形式チェック（キャッシュのキーに使うので、想定外の文字列は使わない）
+function validSubmitId_(id) {
+  return typeof id === "string" && /^[A-Za-z0-9_-]{8,64}$/.test(id);
+}
+
+function getSubmitCache_() {
+  try { return CacheService.getScriptCache(); } catch (e) { return null; }
+}
+
+// 送信IDが記録済みなら、そのときの伝票番号を返す（無ければ ""）
+function findSubmitted_(submitId) {
+  if (!validSubmitId_(submitId)) return "";
+  const cache = getSubmitCache_();
+  if (!cache) return "";
+  try { return cache.get(SUBMIT_CACHE_PREFIX + submitId) || ""; } catch (e) { return ""; }
+}
+
+function rememberSubmitted_(submitId, invoiceNo) {
+  if (!validSubmitId_(submitId) || !invoiceNo) return;
+  const cache = getSubmitCache_();
+  if (!cache) return;
+  try { cache.put(SUBMIT_CACHE_PREFIX + submitId, String(invoiceNo), SUBMIT_CACHE_TTL); } catch (e) {}
+}
+
+// 販売記録の末尾から、同じ内容で DUP_WINDOW_MINUTES 以内に記録された会計を探す。
+// 見つかれば { invoiceNo, secondsAgo }、無ければ null。
+// 照合に失敗しても会計は止めない（null を返して通常どおり記録する）。
+function findRecentDuplicate_(sheet, C, colCount, key, now) {
+  try {
+    if (!("記録日時" in C) || !("伝票番号" in C) || !("飼い主名" in C) ||
+        !("ペット名" in C) || !("合計" in C) || !("明細" in C)) return null;
+    const last = sheet.getLastRow();
+    if (last < 2) return null;
+    const start = Math.max(2, last - DUP_SCAN_ROWS + 1);
+    const rows = sheet.getRange(start, 1, last - start + 1, colCount).getValues();
+    const limitMs = DUP_WINDOW_MINUTES * 60000;
+    // 新しい行から見る（直近の記録を返したいので）
+    for (let i = rows.length - 1; i >= 0; i--) {
+      const r = rows[i];
+      const stamp = r[C["記録日時"]];
+      if (!(stamp instanceof Date)) continue;
+      const diff = now.getTime() - stamp.getTime();
+      if (diff < 0 || diff > limitMs) continue;
+      if (dupKey_(r[C["飼い主名"]], r[C["ペット名"]], r[C["合計"]], r[C["明細"]]) !== key) continue;
+      const inv = String(r[C["伝票番号"]] == null ? "" : r[C["伝票番号"]]).trim();
+      if (!inv) continue;
+      return {
+        // シート上で数値になっていても6桁表記に揃える（明細書に印字するため）
+        invoiceNo: /^\d+$/.test(inv) ? inv.padStart(INVOICE_PAD, "0") : inv,
+        secondsAgo: Math.round(diff / 1000)
+      };
+    }
+  } catch (e) { /* 照合は保険。失敗しても記録は続ける */ }
+  return null;
+}
+
 // ===== 販売記録の保存（POST） =====// 【A-1：サーバ採番版】＋【第2弾：14列化＋技術料台帳】
 //   LockService で「採番→記録」を直列化し、4台同時でも伝票番号が衝突しない。
 //   クライアントは伝票番号を送らない。GASが採番し invoiceNo を返す。
@@ -433,13 +552,18 @@ function doPost(e) {
     const data = JSON.parse(e.postData.contents);
     const ss = SpreadsheetApp.getActiveSpreadsheet();
 
+    // ---- ② 送信IDが記録済みなら、書き込まずに1回目の番号を返す ----
+    // 記録は届いたのに返事が失われ、レジが押し直したケース。
+    const submitId = data.submitId;
+    const already = findSubmitted_(submitId);
+    if (already) {
+      return jsonResponse({ result: "success", invoiceNo: already, alreadyRecorded: true });
+    }
+
     // ---- 販売記録シート ----
     const sheet = ensureRecordSheet(ss);
     const cm = buildColMap(sheet, REC_COLS);
     const C = cm.idx;
-
-    // ---- 伝票番号を採番（ロック保持中に実行）----
-    const invoiceNo = nextInvoiceNo();
 
     // 明細を1セルに集約（単位はクライアントから来た it.unit を使用）
     const itemsText = (data.items || []).map(it => {
@@ -453,6 +577,28 @@ function doPost(e) {
     }).join("\n");
 
     const now = new Date();
+
+    // ---- ① 同じ内容の会計が直近に記録済みなら、書き込まずに知らせる ----
+    // レジ側で「別の会計として記録する」を選んだときだけ allowDuplicate が来る。
+    if (data.allowDuplicate !== true) {
+      const dup = findRecentDuplicate_(sheet, C, cm.count,
+        dupKey_(data.ownerName, data.petName, data.total, itemsText), now);
+      if (dup) {
+        return jsonResponse({
+          result: "duplicate",
+          invoiceNo: dup.invoiceNo,
+          secondsAgo: dup.secondsAgo,
+          // 更新前のレジ（この応答を知らない）にはこの文言がそのまま出る
+          message: "同じ内容の会計が" + DUP_WINDOW_MINUTES + "分以内に記録済みです（No. " + dup.invoiceNo +
+                   "）。二重記録を防ぐため記録しませんでした。ページを再読み込みしてからやり直してください。"
+        });
+      }
+    }
+
+    // ---- 伝票番号を採番（ロック保持中に実行）----
+    // 照合を通ってから採番する（止めた会計で番号を消費しないため）
+    const invoiceNo = nextInvoiceNo();
+
     const visitDate      = data.visitDate || "";
     const staffStr       = data.staff || "";
     const gigiNonVaccine = Number(data.gigiNonVaccine)  || 0;
@@ -488,6 +634,9 @@ function doPost(e) {
     row[C["担当人数"]]        = staffCount;
     row[C["動物種"]]          = data.animalType || "";
     sheet.appendRow(row);
+
+    // 販売記録に書けた時点で送信IDを覚える（以降、同じIDは書き込まずに番号だけ返す）
+    rememberSubmitted_(submitId, invoiceNo);
 
     // 追加した行の手動チェック列をチェックボックスにする
     const newRow = sheet.getLastRow();
@@ -2138,9 +2287,10 @@ function checkDuplicateRecords(year, month) {
   }
 
   // 飼い主・ペット・合計・明細が同じものをまとめる
+  // （記録前の照合 findRecentDuplicate_ と同じキー。基準を食い違わせないため共用）
   const groups = {};
   all.forEach(function (r) {
-    const key = [r.owner, r.pet, r.total, r.detail].join("\u0001");
+    const key = dupKey_(r.owner, r.pet, r.total, r.detail);
     if (!groups[key]) groups[key] = [];
     groups[key].push(r);
   });
