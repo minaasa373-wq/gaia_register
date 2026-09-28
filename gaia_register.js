@@ -15,7 +15,7 @@ const state = {
   staff: [],            // 担当者マスタ
   cart: [],             // 注文リスト
   selectedItemId: null, // 選択中の注文行ID
-  activeCategory: "全て",
+  activeCategory: "",   // 選択中のタブ。空のときは setupUI が左端のタブを選ぶ
   searchQuery: "",
   currentDose: null,    // 用量モーダル選択中
   lastInvoiceNo: null   // 直近の印刷でサーバ採番された伝票番号
@@ -126,6 +126,56 @@ window.addEventListener("DOMContentLoaded", async () => {
   // データ読み込み
   await loadMasterData();
 });
+
+// ===== カテゴリタブの並び順（2026-09 現場の要望で決定） =====
+// 商品マスタと薬品・物品マスタの2シートに分かれているが、タブの順番はここで決める。
+// 以前は「シートに出てきた順」だったため、診療系の後に薬・物販系がまとめて並んでいた。
+//
+// 1要素が1つのタブ位置。先頭が今のカテゴリ名、後ろは旧名。
+// 旧名も並べてあるのは、マスタのカテゴリ名を書き換える前後どちらでも
+// 同じ位置に出すため（コードとマスタの更新の順番に左右されないように）。
+//
+// ここに無いカテゴリが今後マスタに増えた場合は「その他」の直前に並ぶ（消えることはない）。
+// 名前の照合は全角半角・空白の違いを無視する（catKey）。
+const CATEGORY_TAB_ORDER = [
+  ["診察"],
+  ["検査"],
+  ["処置"],
+  ["注射"],
+  ["vac・MC", "ワクチン・チップ"],
+  ["手術"],
+  ["処方薬"],
+  ["処方薬（外用）", "処方薬（外用薬）", "処方薬（外用・軟膏）"],
+  ["処方薬（注射）"],
+  ["医療材料", "消耗品・医療材料"],
+  ["駆虫薬", "ワクチン・駆虫薬"],
+  ["民宿・トリミング"],
+  ["フード", "フード・サプリ"],
+  ["その他"],
+  ["スタッフ割", "スタッフ割引"]
+];
+const UNLISTED_CATEGORY_BEFORE = "その他";   // 一覧に無いカテゴリはこの直前に並べる
+
+// カテゴリ名の照合用キー。
+// 「処方薬(外用)」と「処方薬（外用）」、末尾の空白などを同じ名前として扱う。
+function catKey(c) {
+  return String(c == null ? "" : c).normalize("NFKC").replace(/\s+/g, "");
+}
+
+// マスタのカテゴリ名の一覧を、タブに出す順に並べて返す（重複と空は除く）。
+function orderCategoryTabs(categories) {
+  const rank = {};
+  CATEGORY_TAB_ORDER.forEach((names, i) => names.forEach(n => { rank[catKey(n)] = i; }));
+  const beforeKey = catKey(UNLISTED_CATEGORY_BEFORE);
+  const unlistedRank = (beforeKey in rank) ? rank[beforeKey] - 0.5 : CATEGORY_TAB_ORDER.length;
+
+  const uniq = [...new Set(categories.map(c => String(c == null ? "" : c)).filter(c => c.trim() !== ""))];
+  return uniq
+    .map((c, appear) => ({ c, appear, r: (catKey(c) in rank) ? rank[catKey(c)] : unlistedRank }))
+    // 同じ位置どうし（一覧に無いもの同士・新旧の名前が混在している場合）はマスタに出てきた順
+    .sort((a, b) => (a.r - b.r) || (a.appear - b.appear))
+    .map(x => x.c);
+}
 
 // ===== マスタデータ読み込み =====
 async function loadMasterData() {
@@ -364,10 +414,15 @@ function setupUI() {
   initPetArea();
 
   // カテゴリタブ（各タブにカテゴリ色を適用）
-  const cats = ["全て", ...new Set(state.products.map(p => p.category).filter(Boolean))];
+  // 並び順は CATEGORY_TAB_ORDER で決める（シートの並びには依存しない）。
+  // 「全て」タブは現場の要望で廃止した。全カテゴリから探すときは検索欄を使う。
+  const cats = orderCategoryTabs(state.products.map(p => p.category));
+  // 選択中のタブがマスタから消えた（カテゴリ名を書き換えた等）ときや、
+  // 起動直後で未選択のときは、左端のタブを選ぶ
+  if (!cats.includes(state.activeCategory)) state.activeCategory = cats[0] || "";
   const tabs = document.getElementById("categoryTabs");
   tabs.innerHTML = cats.map(c => {
-    const col = (c === "全て") ? "#1a5c3a" : getCategoryColor(c, "");
+    const col = getCategoryColor(c, "");
     const active = c === state.activeCategory;
     return `<button class="cat-tab${active ? " active" : ""}" data-cat="${escapeHtml(c)}" data-color="${col}" style="--tab-color:${col}">${escapeHtml(c)}</button>`;
   }).join("");
@@ -624,8 +679,8 @@ function renderProducts() {
       );
       return target.includes(q);
     }
-    // 非検索時はタブで絞り込み
-    if (state.activeCategory !== "全て" && p.category !== state.activeCategory) return false;
+    // 非検索時はタブで絞り込み（「全て」タブは廃止）
+    if (p.category !== state.activeCategory) return false;
     return true;
   });
 
@@ -867,17 +922,20 @@ function getCategoryColor(category, override) {
     // 診療系（商品マスタ）
     "診察": "#7F77DD",
     "注射": "#D4537E",
-    "ワクチン・チップ": "#2596A8",
+    "vac・MC": "#2596A8",
+    "ワクチン・チップ": "#2596A8",   // 旧カテゴリ名（マスタ書き換えまでの互換用）
     "検査": "#378ADD",
     "処置": "#1D9E75",
     "手術": "#993C1D",
     "民宿・トリミング": "#3FA796",
     "その他": "#888780",
-    "スタッフ割引": "#B0A030",
+    "スタッフ割": "#B0A030",
+    "スタッフ割引": "#B0A030",       // 旧カテゴリ名（マスタ書き換えまでの互換用）
     // 薬・物販系（薬品・物品マスタ）
     "処方薬": "#2E9E75",
     "処方薬（液剤・シロップ）": "#378ADD",
-    "処方薬（外用薬）": "#EF9F27",
+    "処方薬（外用）": "#EF9F27",
+    "処方薬（外用薬）": "#EF9F27",   // 旧カテゴリ名（マスタ書き換えまでの互換用）
     "処方薬（外用・軟膏）": "#EF9F27",  // 旧カテゴリ名（移行期の互換用）
     "処方薬（点眼薬）": "#7F77DD",
     "処方薬（注射）": "#D4537E",
@@ -885,10 +943,16 @@ function getCategoryColor(category, override) {
     "ワクチン・駆虫薬": "#1D9E75",  // 旧カテゴリ名（移行期の互換用）
     "フード": "#C08A2E",
     "フード・サプリ": "#C08A2E",     // 旧カテゴリ名（移行期の互換用）
-    "消耗品・医療材料": "#888780",
+    "医療材料": "#888780",
+    "消耗品・医療材料": "#888780",   // 旧カテゴリ名（マスタ書き換えまでの互換用）
     "計算式必要": "#C8553D"
   };
-  return colors[category] || "#1a5c3a";
+  // 全角半角・空白の違いは無視して照合する（タブの並び順と同じ規則）
+  const key = catKey(category);
+  for (const name in colors) {
+    if (catKey(name) === key) return colors[name];
+  }
+  return "#1a5c3a";
 }
 
 // ===== 商品をカートに追加（IDから） =====
@@ -2473,8 +2537,8 @@ function getDemoProducts() {
     // 薬・物販（数量タイプ確認用）
     _dp({ id: 521, group: "薬・物販", category: "処方薬（錠剤・カプセル）", subcategory: "抗生剤", name: "ケフレックスカプセル", unit: "Cap", qtyType: "小数OK", price: 110, keywords: "ｹﾌﾚｯｸｽ", order: 521 }),
     _dp({ id: 600, group: "薬・物販", category: "処方薬（液剤・シロップ）", name: "ネオドパゾール液", unit: "㎖", qtyType: "小数OK", price: 15, keywords: "ﾈｵﾄﾞﾊﾟ", order: 600 }),
-    _dp({ id: 650, group: "薬・物販", category: "処方薬（外用・軟膏）", name: "ヒビクス軟膏", unit: "本", qtyType: "整数固定", price: 1200, keywords: "ﾋﾋﾞｸｽ", favorite: "1", order: 650 }),
-    _dp({ id: 800, group: "薬・物販", category: "消耗品・医療材料", name: "エリザベスカラー", unit: "個", qtyType: "整数固定", price: 800, keywords: "ｴﾘｶﾗ", order: 800 }),
+    _dp({ id: 650, group: "薬・物販", category: "処方薬（外用）", name: "ヒビクス軟膏", unit: "本", qtyType: "整数固定", price: 1200, keywords: "ﾋﾋﾞｸｽ", favorite: "1", order: 650 }),
+    _dp({ id: 800, group: "薬・物販", category: "医療材料", name: "エリザベスカラー", unit: "個", qtyType: "整数固定", price: 800, keywords: "ｴﾘｶﾗ", order: 800 }),
 
     // 【第3弾】計算補助（formula）デモ
     _dp({ id: 901, category: "注射", name: "セフォベクリア", price: 0, gigi: 0, memo: "formula:weight*400+1000", keywords: "ｾﾌｫﾍﾞｸﾘｱ", order: 901 }),
