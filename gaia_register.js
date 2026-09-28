@@ -705,7 +705,7 @@ function renderProducts() {
         ${pickMark}${priceMark}${formulaMark}
         <div class="tile-name">${escapeHtml(p.name)}</div>
         ${doseLine}
-        <div class="tile-price">¥${p.price.toLocaleString()}${unitSuffix(p.unit)}</div>
+        <div class="tile-price">${yenDisp(p.price)}${unitSuffix(p.unit)}</div>
       </div>`;
     }).join("");
 }
@@ -785,9 +785,19 @@ function finalizeNewCartItem(item) {
   return item;
 }
 
-// マイナス金額を「-¥700」形式で表示する
+// 金額を「¥1,000」「¥−1,000」形式で表示する（画面・明細書の金額はすべてここを通す）
+//
+// 【2026-09 見直し】現場の意見でマイナスは「¥の後ろ」に統一した。
+// 以前は明細の行が「-¥300」、小計・合計が「¥-14,600」とバラバラだった
+// （明細の行だけこの関数を通し、合計の3行は通していなかったため）。
+//
+// 記号は半角ハイフン(-)ではなく数学のマイナス(U+2212)を使う。
+// ハイフンは短く細いため、白黒印刷の明細書で見落とされていた。
+// ※ 過去ログ（kakolog.js）の yenDisp も同じ書式。変えるときは両方直すこと。
+const MINUS_SIGN = "\u2212";
 function yenDisp(v) {
-  return v < 0 ? "-¥" + Math.abs(v).toLocaleString() : "¥" + v.toLocaleString();
+  const n = Number(v) || 0;
+  return "¥" + (n < 0 ? MINUS_SIGN : "") + Math.abs(n).toLocaleString();
 }
 // メモ列から計算パラメータを抽出
 // 例: "formula:weight*400+1000" → { varName:"weight", coeff:400, base:1000 }
@@ -1009,7 +1019,7 @@ function buildGigiPrintLine() {
   const nonVac = calcNonVaccineGigi();
   const vac = calcVaccineGigi();
   const cnt = getStaffCount();
-  return `<div class="print-gigi">技術料　通常 ¥${nonVac.toLocaleString()} ／ ワクチン ¥${vac.toLocaleString()} ／ 担当獣医 ${cnt}名</div>`;
+  return `<div class="print-gigi">技術料　通常 ${yenDisp(nonVac)} ／ ワクチン ${yenDisp(vac)} ／ 担当獣医 ${cnt}名</div>`;
 }
 
 // ワクチン種類別の件数を集計
@@ -1042,7 +1052,7 @@ function openDoseModalByGroup(modalGroup) {
   const opts = doseGroup.map(p => `
     <div class="dose-opt${p === state.currentDose ? " selected" : ""}" data-id="${p.id}" onclick="selectDose(${p.id})">
       <div class="dose-value">${escapeHtml(p.dose || p.name || "—")}</div>
-      <div class="dose-price">¥${p.price.toLocaleString()}${p.unit ? " /" + escapeHtml(p.unit) : ""}</div>
+      <div class="dose-price">${yenDisp(p.price)}${p.unit ? " /" + escapeHtml(p.unit) : ""}</div>
     </div>
   `).join("");
   document.getElementById("doseOptions").innerHTML = opts;
@@ -1119,13 +1129,13 @@ function updateDoseTotal() {
   if (hasStay(state.currentDose)) {
     const { heads, nights } = getStayInputs();
     const total = Math.round(state.currentDose.price * heads * nights);
-    document.getElementById("doseTotalAmount").textContent = "¥" + total.toLocaleString();
+    document.getElementById("doseTotalAmount").textContent = yenDisp(total);
     return;
   }
   let qty = parseFloat(document.getElementById("doseQty").value) || 0;
   if (isIntegerOnly(state.currentDose)) qty = Math.round(qty);
   const total = Math.round(state.currentDose.price * qty);
-  document.getElementById("doseTotalAmount").textContent = "¥" + total.toLocaleString();
+  document.getElementById("doseTotalAmount").textContent = yenDisp(total);
 }
 function confirmDose() {
   const prod = state.currentDose;
@@ -1241,7 +1251,7 @@ function renderMultiPickOptions() {
     return `
       <div class="dose-opt${multiPickSelected.has(p.id) ? " selected" : ""}" onclick="toggleMultiPick(${p.id})">
         <div class="dose-value">${escapeHtml(p.name)}</div>
-        <div class="dose-price">¥${p.price.toLocaleString()}</div>
+        <div class="dose-price">${yenDisp(p.price)}</div>
       </div>
     `;
   }).join("");
@@ -1267,7 +1277,7 @@ function updateMultiPickTotal() {
   );
   const total = sel.reduce((s, p) => s + (p.price || 0), 0);
   document.getElementById("multiPickCount").textContent = sel.length;
-  document.getElementById("multiPickTotalAmount").textContent = "¥" + total.toLocaleString();
+  document.getElementById("multiPickTotalAmount").textContent = yenDisp(total);
 }
 
 function confirmMultiPick() {
@@ -1463,11 +1473,11 @@ function recalcFormulaPrice() {
   const { coeff, base } = formulaParams;
   const price = Math.round(qty * coeff + base);
 
-  document.getElementById("formulaCalcPrice").textContent = "¥" + price.toLocaleString();
+  document.getElementById("formulaCalcPrice").textContent = yenDisp(price);
   // 内訳表示
   if (qty > 0) {
     document.getElementById("formulaBreakdown").textContent =
-      `${qty} × ¥${coeff.toLocaleString()} + ¥${base.toLocaleString()} = ¥${price.toLocaleString()}`;
+      `${qty} × ${yenDisp(coeff)} + ${yenDisp(base)} = ${yenDisp(price)}`;
   } else {
     document.getElementById("formulaBreakdown").textContent = "";
   }
@@ -1586,7 +1596,7 @@ function openDrugQtyModal(productId) {
   const intOnly = isIntegerOnly(p);
   document.getElementById("drugQtyProductName").textContent = p.name;
   document.getElementById("drugQtyUnitPrice").textContent =
-    "¥" + p.price.toLocaleString() + (p.unit ? " / " + p.unit : "");
+    yenDisp(p.price) + (p.unit ? " / " + p.unit : "");
   document.getElementById("drugQtyLabel").textContent =
     "数量" + (intOnly ? "（整数のみ）" : "（小数OK：例 6.5）");
   const input = document.getElementById("drugQtyInput");
@@ -1630,7 +1640,7 @@ function updatePowderTotal() {
   const packs = parseInt(document.getElementById("powderPacks").value) || 0;
   const unitPrice = parseFloat(document.getElementById("powderUnitPrice").value) || 0;
   const total = Math.round(packs * unitPrice);
-  document.getElementById("powderTotalDisp").textContent = "¥" + total.toLocaleString();
+  document.getElementById("powderTotalDisp").textContent = yenDisp(total);
 }
 function confirmPowder() {
   const packs = parseInt(document.getElementById("powderPacks").value);
@@ -1685,7 +1695,7 @@ function closeGroupDiscModal() {
 function updateGroupDiscTotal() {
   const amt = Math.floor(Math.abs(parseFloat(document.getElementById("groupDiscAmount").value) || 0));
   document.getElementById("groupDiscDisp").textContent =
-    amt > 0 ? "-¥" + amt.toLocaleString() : "¥0";
+    yenDisp(-amt);
 }
 function confirmGroupDisc() {
   const amt = Math.floor(Math.abs(parseFloat(document.getElementById("groupDiscAmount").value) || 0));
@@ -1718,7 +1728,7 @@ function confirmGroupDisc() {
   });
   closeGroupDiscModal();
   renderCart();
-  showToast("団体割引 -¥" + amt.toLocaleString() + " を追加しました");
+  showToast("団体割引 " + yenDisp(-amt) + " を追加しました");
 }
 
 function openFreeModal() {
@@ -1736,7 +1746,7 @@ function updateFreeTotal() {
   const price = parseFloat(document.getElementById("freePrice").value) || 0;
   const qty = parseFloat(document.getElementById("freeQty").value) || 0;
   const total = Math.round(price * qty);
-  document.getElementById("freeTotalDisp").textContent = "¥" + total.toLocaleString();
+  document.getElementById("freeTotalDisp").textContent = yenDisp(total);
 }
 function confirmFree() {
   const name = document.getElementById("freeName").value.trim();
@@ -1904,9 +1914,9 @@ function recalc() {
   });
   const tax = Math.ceil(taxableSub * 0.1);
   const total = subtotal + tax;
-  document.getElementById("subtotalDisp").textContent = "¥" + subtotal.toLocaleString();
-  document.getElementById("taxDisp").textContent = "¥" + tax.toLocaleString();
-  document.getElementById("totalDisp").textContent = "¥" + total.toLocaleString();
+  document.getElementById("subtotalDisp").textContent = yenDisp(subtotal);
+  document.getElementById("taxDisp").textContent = yenDisp(tax);
+  document.getElementById("totalDisp").textContent = yenDisp(total);
   document.getElementById("checkoutBtn").disabled = state.cart.length === 0;
   const clearBtn = document.getElementById("clearAllBtn");
   if (clearBtn) clearBtn.disabled = state.cart.length === 0;
@@ -2020,9 +2030,9 @@ function renderReceiptHtml(forPrint, invoiceNo, isCopy) {
       <div class="print-divider"></div>
       ${items}
       <div class="print-divider"></div>
-      <div class="print-totals-row"><span>小計</span><span>¥${subtotal.toLocaleString()}</span></div>
-      <div class="print-totals-row"><span>消費税(10%)</span><span>¥${tax.toLocaleString()}</span></div>
-      <div class="print-totals-row grand"><span>合　計</span><span>¥${total.toLocaleString()}</span></div>
+      <div class="print-totals-row"><span>小計</span><span>${yenDisp(subtotal)}</span></div>
+      <div class="print-totals-row"><span>消費税(10%)</span><span>${yenDisp(tax)}</span></div>
+      <div class="print-totals-row grand"><span>合　計</span><span>${yenDisp(total)}</span></div>
       ${isCopy ? buildGigiPrintLine() : ""}
       <div class="print-thanks">
         お大事にしてください。
@@ -2045,9 +2055,9 @@ function renderReceiptHtml(forPrint, invoiceNo, isCopy) {
       <div class="receipt-items">${items}</div>
       <div class="receipt-divider"></div>
       <div class="receipt-totals">
-        <div class="receipt-totals-row"><span>小計</span><span>¥${subtotal.toLocaleString()}</span></div>
-        <div class="receipt-totals-row"><span>消費税(10%)</span><span>¥${tax.toLocaleString()}</span></div>
-        <div class="receipt-totals-row grand"><span>合　計</span><span>¥${total.toLocaleString()}</span></div>
+        <div class="receipt-totals-row"><span>小計</span><span>${yenDisp(subtotal)}</span></div>
+        <div class="receipt-totals-row"><span>消費税(10%)</span><span>${yenDisp(tax)}</span></div>
+        <div class="receipt-totals-row grand"><span>合　計</span><span>${yenDisp(total)}</span></div>
       </div>
       <div class="receipt-footer">
         お大事にしてください。

@@ -122,14 +122,14 @@ function renderResults(data) {
           <div class="record-date">${escapeHtml(r.visitDate)}　No.${escapeHtml(r.invoiceNo)}</div>
           <div class="record-names">${escapeHtml(animalBadge + names)}</div>
         </div>
-        <div class="record-total">¥${Number(r.total).toLocaleString()}</div>
+        <div class="record-total">${yenDisp(r.total)}</div>
       </div>
       <div class="record-detail">
-        <div class="detail-items">${escapeHtml(r.items)}</div>
+        <div class="detail-items">${escapeHtml(minusForDisplay(r.items))}</div>
         <div class="detail-sums">
-          <div class="row"><span>小計</span><span>¥${Number(r.subtotal).toLocaleString()}</span></div>
-          <div class="row"><span>消費税</span><span>¥${Number(r.tax).toLocaleString()}</span></div>
-          <div class="row total"><span>合計</span><span>¥${Number(r.total).toLocaleString()}</span></div>
+          <div class="row"><span>小計</span><span>${yenDisp(r.subtotal)}</span></div>
+          <div class="row"><span>消費税</span><span>${yenDisp(r.tax)}</span></div>
+          <div class="row total"><span>合計</span><span>${yenDisp(r.total)}</span></div>
         </div>
         <div class="detail-meta">担当：${escapeHtml(r.staff || "—")}　件数：${r.count}件</div>
         <button class="btn-reprint" onclick="event.stopPropagation();reprintRecord(${i})">🖨 明細書を再印刷</button>
@@ -207,13 +207,13 @@ function reprintRecord(i) {
   const itemLines = String(r.items || "").split("\n").filter(Boolean).map(line => {
     const idx = line.lastIndexOf(" = ");
     if (idx === -1) {
-      return `<div class="print-item-line"><span class="item-left">${escapeHtml(line)}</span></div>`;
+      return `<div class="print-item-line"><span class="item-left">${escapeHtml(minusForDisplay(line))}</span></div>`;
     }
     const left = line.slice(0, idx);
     const right = line.slice(idx + 3); // " = " の後ろ（¥金額）
     return `<div class="print-item-line">
-      <span class="item-left">${escapeHtml(left)}</span>
-      <span class="item-right">${escapeHtml(right)}</span>
+      <span class="item-left">${escapeHtml(minusForDisplay(left))}</span>
+      <span class="item-right">${escapeHtml(minusForDisplay(right))}</span>
     </div>`;
   }).join("");
 
@@ -224,7 +224,7 @@ function reprintRecord(i) {
   // ※ 技術料はお客様用（1枚目）には絶対に出さない。
   function buildPage(isCopy) {
     const gigiLine = isCopy
-      ? `<div class="print-gigi">技術料　通常 ¥${Number(r.gigiNonVaccine || 0).toLocaleString()} ／ ワクチン ¥${Number(r.gigiVaccine || 0).toLocaleString()} ／ 担当 ${Number(r.staffCount || 1)}名</div>`
+      ? `<div class="print-gigi">技術料　通常 ${yenDisp(r.gigiNonVaccine)} ／ ワクチン ${yenDisp(r.gigiVaccine)} ／ 担当 ${Number(r.staffCount || 1)}名</div>`
       : "";
     return `
     <div class="print-page">
@@ -242,9 +242,9 @@ function reprintRecord(i) {
       <div class="print-divider"></div>
       ${itemLines}
       <div class="print-divider"></div>
-      <div class="print-totals-row"><span>小計</span><span>¥${Number(r.subtotal).toLocaleString()}</span></div>
-      <div class="print-totals-row"><span>消費税(10%)</span><span>¥${Number(r.tax).toLocaleString()}</span></div>
-      <div class="print-totals-row grand"><span>合　計</span><span>¥${Number(r.total).toLocaleString()}</span></div>
+      <div class="print-totals-row"><span>小計</span><span>${yenDisp(r.subtotal)}</span></div>
+      <div class="print-totals-row"><span>消費税(10%)</span><span>${yenDisp(r.tax)}</span></div>
+      <div class="print-totals-row grand"><span>合　計</span><span>${yenDisp(r.total)}</span></div>
       ${gigiLine}
       <div class="print-thanks">
         お大事にしてください。
@@ -275,6 +275,23 @@ function clearForm() {
 }
 
 // ===== HTMLエスケープ =====
+// 金額を「¥1,000」「¥−1,000」形式で表示する。
+// レジ本体（gaia_register.js）の yenDisp と同じ書式。変えるときは両方直すこと。
+// （過去ログは別ページで、レジ本体のJSを読み込んでいないため、ここにも置いている）
+// 記号は半角ハイフンではなく数学のマイナス(U+2212)。白黒印刷で見落とされないように。
+const MINUS_SIGN = "\u2212";
+function yenDisp(v) {
+  const n = Number(v) || 0;
+  return "¥" + (n < 0 ? MINUS_SIGN : "") + Math.abs(n).toLocaleString();
+}
+
+// 販売記録の「明細」列に保存済みの文字列（例：「○○ 1錠 × ¥-300 = ¥-300」）を
+// 表示するときだけ、「¥-」を「¥−」に置き換える。
+// 保存されている文字列そのものは書き換えない（シート上の検索や集計の邪魔をしないため）。
+function minusForDisplay(text) {
+  return String(text == null ? "" : text).replace(/¥-(?=\d)/g, "¥" + MINUS_SIGN);
+}
+
 function escapeHtml(s) {
   return String(s == null ? "" : s)
     .replace(/&/g, "&amp;")
