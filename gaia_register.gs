@@ -969,6 +969,7 @@ function onOpen() {
     .addItem("二重送信チェック", "promptDuplicateCheck")
     .addSeparator()
     .addItem("月次集計を実行", "promptMonthlyReport")
+    .addItem("月次集計に印刷用まとめを追加", "promptPrintSummary")
     .addItem(OWNER_REPORT_LABEL + " 明細を出力", "promptOwnerReport")
     .addSeparator()
     .addItem("マスタのキャッシュを破棄", "clearMasterCache")
@@ -1901,6 +1902,16 @@ function generateMonthlyGigiReport(year, month) {
     report.getRange(2, 3, totalRowNum - 1, headers.length - 2).setNumberFormat("#,##0");
   }
 
+  // ---- 11b. 印刷用まとめシート ----
+  // 集計表を参照する式で作るので、あとで手動配分を入力すれば数字も変わる。
+  // 失敗しても集計表そのものは出来ているので、知らせるだけにする。
+  let summaryNote = "印刷用まとめ: シート「" + PRINT_SUMMARY_SHEET + "」を作りました";
+  try {
+    addPrintSummarySheet_(newSS, year, month);
+  } catch (e) {
+    summaryNote = "印刷用まとめ: 作れませんでした（" + e.message + "）。メニューの「月次集計に印刷用まとめを追加」でやり直せます";
+  }
+
   // ---- 12. カード決済台帳へ転記（伝票番号で重複チェック済み） ----
   let cardCopied = 0;
   try {
@@ -1943,7 +1954,8 @@ function generateMonthlyGigiReport(year, month) {
         "　　塗られます。不要なら台帳側の行も削除してください。\n"
       : "") +
     "カード決済台帳へ新たに転記: " + cardCopied + "件\n" +
-    "繰越として今回の給与に加算: " + carryMarked + "件"
+    "繰越として今回の給与に加算: " + carryMarked + "件\n" +
+    summaryNote
   );
 }
 
@@ -2153,8 +2165,12 @@ function createOwnerReportSpreadsheet(year, month) {
   return newSS;
 }
 
+function reportFileName_(year, month) {
+  return "技術料月次集計_" + year + "年" + String(month).padStart(2, "0") + "月";
+}
+
 function createReportSpreadsheet(year, month) {
-  const fileName = "技術料月次集計_" + year + "年" + String(month).padStart(2, "0") + "月";
+  const fileName = reportFileName_(year, month);
 
   // フォルダ階層を取得 or 作成
   const root = DriveApp.getRootFolder();
@@ -2175,6 +2191,198 @@ function createReportSpreadsheet(year, month) {
   DriveApp.getRootFolder().removeFile(file);
 
   return newSS;
+}
+
+// ===== 印刷用まとめ（2026-10） =====
+// 月次集計ファイルに、獣医ごとの技術料合計・歩合率・算出金額と、ワクチンの種類別件数だけを
+// 大きな文字で並べたシートを足す。給与の確認や手渡し用に、表とは別に印刷するためのもの。
+//
+// 数字は書き写さず、「月次集計」シートのセルを参照する式にしている。
+// 月次集計は作ったあとに手動配分を入力するので、書き写すと入力前の数字で固まってしまう。
+//
+// 月次集計の作成時（generateMonthlyGigiReport）と、作成済みファイルへ後から足すメニューの
+// 両方からこの関数を呼ぶ。どちらも「月次集計」シートの中身を読んで行・列を探すので、
+// 表の作り方が変わってもここで追従する（行番号を決め打ちにしない）。
+const PRINT_SUMMARY_SHEET = "印刷用まとめ";
+const REPORT_MAIN_SHEET   = "月次集計";
+
+// 「月次集計」シートから、印刷用まとめに必要な行・列を探す
+function locateReportParts_(sheet) {
+  const values   = sheet.getDataRange().getValues();
+  const formulas = sheet.getDataRange().getFormulas();
+  if (!values.length) throw new Error("「" + REPORT_MAIN_SHEET + "」シートが空です");
+  const head = values[0].map(function (v) { return String(v == null ? "" : v).trim(); });
+
+  // 獣医の列：C列から「複数担当」の手前まで
+  const multiIdx = head.indexOf("複数担当");
+  if (multiIdx < 3) throw new Error("見出しに「複数担当」が見つかりません");
+
+  // 合計行：A列が「合計」の行（ワクチン表の「合計」は右側の列なので混ざらない）
+  let totalIdx = -1;
+  for (let i = 1; i < values.length; i++) {
+    if (String(values[i][0]).trim() === "合計") { totalIdx = i; break; }
+  }
+  if (totalIdx < 0) throw new Error("合計の行が見つかりません");
+  const rateIdx = totalIdx + 1, calcIdx = totalIdx + 2;   // 生成側で合計→歩合率→算出金額の順に並べている
+  if (calcIdx >= values.length) throw new Error("歩合率・算出金額の行が見つかりません");
+
+  // 歩合率がある獣医＝算出金額の行に式が入っている列
+  const vets = [];
+  for (let c = 2; c < multiIdx; c++) {
+    if (!head[c]) continue;
+    if (!String(formulas[calcIdx][c] || "").trim()) continue;
+    vets.push({ name: head[c], col: c + 1 });
+  }
+
+  // ワクチン種類別件数：1行目の「ワクチン種類」の列から「合計」の行まで
+  const vaccIdx = head.indexOf("ワクチン種類");
+  const vaccRows = [];
+  let vaccTotalRow = 0;
+  if (vaccIdx >= 0) {
+    for (let i = 1; i < values.length; i++) {
+      const name = String(values[i][vaccIdx] == null ? "" : values[i][vaccIdx]).trim();
+      if (!name) break;
+      if (name === "合計") { vaccTotalRow = i + 1; break; }
+      vaccRows.push(i + 1);
+    }
+  }
+  return {
+    totalRow: totalIdx + 1, rateRow: rateIdx + 1, calcRow: calcIdx + 1,
+    vets: vets, vaccCol: vaccIdx + 1, vaccRows: vaccRows, vaccTotalRow: vaccTotalRow
+  };
+}
+
+function addPrintSummarySheet_(reportSS, year, month) {
+  const main = reportSS.getSheetByName(REPORT_MAIN_SHEET);
+  if (!main) throw new Error("「" + REPORT_MAIN_SHEET + "」シートが見つかりません");
+  const L = locateReportParts_(main);
+  if (!L.vets.length) throw new Error("歩合率が設定された獣医がいません");
+
+  // 何度実行しても1枚になるよう、前回の印刷用まとめは作り直す
+  const old = reportSS.getSheetByName(PRINT_SUMMARY_SHEET);
+  if (old) reportSS.deleteSheet(old);
+  const sh = reportSS.insertSheet(PRINT_SUMMARY_SHEET, reportSS.getSheets().length);
+
+  const ref = function (row, col) {
+    return "='" + REPORT_MAIN_SHEET + "'!" + columnToLetter(col) + row;
+  };
+  const W = 4;
+  const rows = [];      // [値の配列]
+  const style = [];     // 行ごとの見た目の種類
+
+  rows.push([year + "年" + month + "月　技術料 集計", "", "", ""]);         style.push("title");
+  rows.push(["", "", "", ""]);                                             style.push("gap");
+  rows.push(["獣医", "技術料合計", "歩合率", "算出金額"]);                  style.push("head");
+  L.vets.forEach(function (v) {
+    rows.push([v.name, ref(L.totalRow, v.col), ref(L.rateRow, v.col), ref(L.calcRow, v.col)]);
+    style.push("vet");
+  });
+  const vetFirst = 4, vetLast = 3 + L.vets.length;
+
+  let vaccHead = 0, vaccFirst = 0, vaccLast = 0, vaccTotal = 0;
+  if (L.vaccCol > 0) {
+    rows.push(["", "", "", ""]);                                           style.push("gap");
+    rows.push(["ワクチン", "件数", "", ""]);                                 style.push("head2");
+    vaccHead = rows.length;
+    L.vaccRows.forEach(function (r) {
+      rows.push([ref(r, L.vaccCol), ref(r, L.vaccCol + 1), "", ""]);         style.push("vacc");
+    });
+    vaccFirst = vaccHead + 1; vaccLast = rows.length;
+    if (L.vaccTotalRow) {
+      rows.push(["合計", ref(L.vaccTotalRow, L.vaccCol + 1), "", ""]);        style.push("vaccTotal");
+      vaccTotal = rows.length;
+    }
+  }
+
+  sh.getRange(1, 1, rows.length, W).setValues(rows);
+
+  // ---- 見た目（印刷して読むので大きく。A4縦に収まる幅にしてある）----
+  sh.setHiddenGridlines(true);
+  // 1列目は「犬10種ワクチン（団体割引）」が16ptで1行に収まる幅。4列の合計を A4縦の印字幅（約670px）に収める
+  sh.setColumnWidth(1, 320);
+  sh.setColumnWidth(2, 140);
+  sh.setColumnWidth(3, 75);
+  sh.setColumnWidth(4, 135);
+  sh.getRange(1, 1, rows.length, W).setFontFamily("Arial").setVerticalAlignment("middle");
+
+  sh.getRange(1, 1, 1, W).merge().setFontSize(20).setFontWeight("bold");
+  sh.setRowHeight(1, 44);
+
+  // 獣医の表
+  sh.getRange(3, 1, 1, W).setFontSize(13).setFontWeight("bold")
+    .setBackground("#1a5c3a").setFontColor("#ffffff").setHorizontalAlignment("center");
+  sh.setRowHeight(3, 32);
+  const vetRange = sh.getRange(vetFirst, 1, vetLast - vetFirst + 1, W);
+  vetRange.setFontSize(16);
+  sh.getRange(vetFirst, 1, vetLast - vetFirst + 1, 1).setFontWeight("bold");
+  sh.getRange(vetFirst, 2, vetLast - vetFirst + 1, 1).setNumberFormat("¥#,##0").setHorizontalAlignment("right");
+  sh.getRange(vetFirst, 3, vetLast - vetFirst + 1, 1).setNumberFormat("0.##%").setHorizontalAlignment("center");
+  sh.getRange(vetFirst, 4, vetLast - vetFirst + 1, 1).setNumberFormat("¥#,##0").setHorizontalAlignment("right")
+    .setFontWeight("bold").setFontSize(18).setBackground("#fff3e0");
+  for (let r = vetFirst; r <= vetLast; r++) sh.setRowHeight(r, 38);
+  sh.getRange(3, 1, vetLast - 2, W).setBorder(true, true, true, true, true, true);
+
+  // ワクチンの表
+  if (vaccHead) {
+    sh.getRange(vaccHead, 1, 1, 2).setFontSize(13).setFontWeight("bold")
+      .setBackground("#1a5c3a").setFontColor("#ffffff").setHorizontalAlignment("center");
+    sh.setRowHeight(vaccHead, 32);
+    const last = vaccTotal || vaccLast;
+    if (last > vaccHead) {
+      sh.getRange(vaccHead + 1, 1, last - vaccHead, 2).setFontSize(16);
+      sh.getRange(vaccHead + 1, 2, last - vaccHead, 1).setHorizontalAlignment("right").setNumberFormat("#,##0");
+      for (let r = vaccHead + 1; r <= last; r++) sh.setRowHeight(r, 34);
+    }
+    if (vaccTotal) sh.getRange(vaccTotal, 1, 1, 2).setFontWeight("bold").setBackground("#e8f5e9");
+    sh.getRange(vaccHead, 1, last - vaccHead + 1, 2).setBorder(true, true, true, true, true, true);
+  }
+  return { sheet: sh, vets: L.vets.length, vaccines: L.vaccRows.length };
+}
+
+// メニュー：作成済みの月次集計ファイルに印刷用まとめを足す（作り直しはしない）
+function promptPrintSummary() {
+  const ui = SpreadsheetApp.getUi();
+  const res = ui.prompt(
+    "月次集計に印刷用まとめを追加",
+    "対象年月を入力してください（例: 2026-09）\n" +
+    "作成済みの月次集計ファイルにシートを1枚足すだけです。集計表や手動配分の入力は変わりません。",
+    ui.ButtonSet.OK_CANCEL
+  );
+  if (res.getSelectedButton() !== ui.Button.OK) return;
+  const m = res.getResponseText().trim().match(/^(\d{4})-(\d{1,2})$/);
+  if (!m) { ui.alert("形式が正しくありません。例: 2026-09"); return; }
+  const year = parseInt(m[1], 10), month = parseInt(m[2], 10);
+  const fileName = reportFileName_(year, month);
+
+  // 探すだけ。フォルダやファイルが無くても作らない
+  const gaia = DriveApp.getRootFolder().getFoldersByName("ガイア動物病院");
+  const folder = gaia.hasNext() ? gaia.next().getFoldersByName("獣医技術料 月次集計") : null;
+  const files = [];
+  if (folder && folder.hasNext()) {
+    const it = folder.next().getFilesByName(fileName);
+    while (it.hasNext()) {
+      const f = it.next();
+      if (!f.isTrashed()) files.push(f);
+    }
+  }
+  if (!files.length) {
+    ui.alert("「" + fileName + "」が見つかりませんでした。\n" +
+             "保存先: マイドライブ > ガイア動物病院 > 獣医技術料 月次集計");
+    return;
+  }
+  if (files.length > 1) {
+    ui.alert("「" + fileName + "」が " + files.length + " 個あります。どれに足すか決められないので、\n" +
+             "不要なファイルをゴミ箱に移してからやり直してください。");
+    return;
+  }
+  try {
+    const out = addPrintSummarySheet_(SpreadsheetApp.openById(files[0].getId()), year, month);
+    ui.alert("「" + fileName + "」に、シート「" + PRINT_SUMMARY_SHEET + "」を追加しました。\n" +
+             "獣医 " + out.vets + " 名・ワクチン " + out.vaccines + " 種類\n\n" +
+             "印刷するときは、そのシートを開いて［ファイル → 印刷］で「現在のシート」を選んでください。");
+  } catch (e) {
+    ui.alert("印刷用まとめを作れませんでした：\n" + e.message);
+  }
 }
 
 // フォルダがなければ作成
