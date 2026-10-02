@@ -1,0 +1,934 @@
+<!DOCTYPE html>
+<html>
+<head>
+<base target="_top">
+<meta charset="utf-8">
+<style>
+  :root {
+    --green:  #1a5c3a;
+    --line:   #d8ddd8;
+    --bg:     #f6f7f5;
+    --orange: #ffe0b2;
+    --blue:   #b3e5fc;
+    --red:    #c62828;
+    --amber:  #8a6d1f;
+  }
+  * { box-sizing: border-box; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    font-family: -apple-system, "Hiragino Kaku Gothic ProN", "Meiryo", sans-serif;
+    font-size: 13px; color: #222; background: #fff;
+  }
+  body { display: flex; flex-direction: column; }
+
+  /* ---- タブ ---- */
+  .tabs { display: flex; background: #123f28; flex: none; }
+  .tab {
+    padding: 9px 20px; border: 0; background: transparent; color: #a9c6b5;
+    font-size: 13px; cursor: pointer; border-bottom: 3px solid transparent;
+  }
+  .tab.on { color: #fff; font-weight: bold; border-bottom-color: #f9a825; background: var(--green); }
+
+  /* ---- 伝票番号の入力 ---- */
+  .bar {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; background: var(--green); color: #fff; flex: none;
+  }
+  .bar label { font-weight: bold; font-size: 14px; }
+  #invoice {
+    width: 150px; padding: 8px 10px; font-size: 20px; font-weight: bold;
+    text-align: center; border: 2px solid #fff; border-radius: 6px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .bar .hint { font-size: 11px; opacity: .85; line-height: 1.5; }
+  .bar .spacer { flex: 1; }
+  .btn {
+    padding: 8px 14px; font-size: 13px; border-radius: 6px; cursor: pointer;
+    border: 1px solid var(--line); background: #fff; color: #222;
+  }
+  .btn:disabled { opacity: .45; cursor: default; }
+  .btn-main {
+    background: #f9a825; border-color: #f9a825; color: #222;
+    font-weight: bold; font-size: 15px; padding: 10px 22px;
+  }
+  .btn-main:focus { outline: 3px solid #1a5c3a; outline-offset: 2px; }
+  .btn-danger { border-color: var(--red); color: var(--red); }
+
+  /* ---- 本体 ---- */
+  .body { flex: 1; overflow: auto; padding: 12px 14px; background: var(--bg); }
+  .placeholder { color: #8a8f8a; text-align: center; padding: 60px 20px; line-height: 2; }
+  .placeholder .big { font-size: 15px; color: #555; }
+
+  .cols { display: flex; gap: 12px; align-items: flex-start; }
+  .col-l { flex: 1.15; min-width: 0; }
+  .col-r { flex: 1; min-width: 0; }
+  .card {
+    background: #fff; border: 1px solid var(--line); border-radius: 8px;
+    padding: 10px 12px; margin-bottom: 10px;
+  }
+  .card h3 {
+    margin: 0 0 8px; font-size: 11px; color: #6b726b;
+    letter-spacing: .08em; font-weight: bold;
+  }
+  pre.items {
+    margin: 0; white-space: pre-wrap; word-break: break-all;
+    font-family: "SF Mono", Consolas, monospace; font-size: 12.5px; line-height: 1.75;
+    max-height: 230px; overflow: auto;
+  }
+  pre.snap {
+    margin: 0; white-space: pre-wrap; word-break: break-all;
+    font-family: "SF Mono", Consolas, monospace; font-size: 11px; line-height: 1.6;
+    color: #555; max-height: 120px; overflow: auto;
+  }
+
+  table.meta { width: 100%; border-collapse: collapse; }
+  table.meta th, table.meta td {
+    text-align: left; padding: 4px 2px; border-bottom: 1px solid #eee; vertical-align: top;
+  }
+  table.meta th { width: 74px; color: #6b726b; font-weight: normal; }
+  .total { font-size: 19px; font-weight: bold; }
+  .muted { color: #8a8f8a; }
+
+  .gigi-row { display: flex; gap: 10px; }
+  .gigi-row > div { flex: 1; }
+  .gigi-row label { display: block; font-size: 11px; color: #6b726b; margin-bottom: 3px; }
+  .gigi-row input {
+    width: 100%; padding: 7px 9px; font-size: 16px; text-align: right;
+    border: 1px solid var(--line); border-radius: 5px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .gigi-row input.changed { border-color: #f9a825; background: #fffbf0; }
+
+  .toggles { display: flex; gap: 8px; }
+  .toggle {
+    flex: 1; padding: 12px 6px; border: 2px solid var(--line); border-radius: 8px;
+    background: #fff; cursor: pointer; text-align: center; font-size: 14px;
+  }
+  .toggle .key { display: block; font-size: 10px; color: #8a8f8a; margin-top: 3px; }
+  .toggle.on { border-color: var(--green); background: #e8f3ec; font-weight: bold; }
+  .toggle.on .mark { color: var(--green); }
+  .toggle-ledger { border-color: #7fb8d6; }
+  .toggle-ledger.on { border-color: #2b6a8a; background: #e3f2fa; }
+  .toggle-ledger.on .mark { color: #2b6a8a; }
+  .ledger-info { font-size: 11px; color: #2b6a8a; margin-top: 6px; line-height: 1.6; }
+
+  .badge { display: inline-block; padding: 3px 9px; border-radius: 11px; font-size: 11px; margin-right: 6px; }
+  .badge-free { background: var(--orange); }
+  .badge-card { background: var(--blue); }
+  .notes { color: var(--amber); font-size: 12px; line-height: 1.7; }
+  .notes div::before { content: "⚠ "; }
+
+  .pick { cursor: pointer; }
+  .pick:hover { background: #f0f6f2; }
+
+  .danger {
+    border: 2px solid var(--red); background: #fff5f5;
+    border-radius: 8px; padding: 12px; margin-bottom: 10px;
+  }
+  .danger h3 { color: var(--red); margin: 0 0 6px; font-size: 13px; }
+  .danger p { margin: 0 0 10px; line-height: 1.7; }
+
+  /* ---- 日付でまとめて ---- */
+  #dayCtl { display: none; align-items: center; gap: 8px; }
+  #dayDate {
+    padding: 7px 10px; font-size: 17px; font-weight: bold; border: 2px solid #fff; border-radius: 6px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  .btn-nav { padding: 7px 12px; font-size: 15px; }
+  .day-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 8px; }
+  .day-head .d { font-size: 16px; font-weight: bold; }
+  .day-head .c { color: #555; }
+  table.day { width: 100%; border-collapse: collapse; background: #fff; }
+  table.day th {
+    position: sticky; top: 0; background: #eef2ee; font-size: 11px; color: #555;
+    text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); z-index: 1;
+  }
+  table.day td { padding: 6px 6px; border-bottom: 1px solid #eee; vertical-align: middle; }
+  table.day td.r, table.day th.r { text-align: right; }
+  table.day td.ck { width: 64px; text-align: center; }
+  table.day input[type=checkbox] { width: 20px; height: 20px; cursor: pointer; }
+  table.day tr.todo { cursor: pointer; }
+  table.day tr.todo:hover { background: #f0f6f2; }
+  table.day tr.todo.off { background: #fffbf0; }
+  table.day tr.done td { color: #9aa09a; background: #f7f7f5; }
+  table.day .inv { font-family: "SF Mono", Consolas, monospace; font-weight: bold; }
+  .day-sum { font-size: 13px; }
+  .day-sum b { font-size: 15px; }
+
+  /* ---- 下段 ---- */
+  .foot {
+    display: flex; align-items: center; gap: 10px;
+    padding: 10px 14px; border-top: 1px solid var(--line); background: #fff; flex: none;
+  }
+  .foot .spacer { flex: 1; }
+  #status { font-size: 12px; color: #555; }
+  #status.err { color: var(--red); font-weight: bold; }
+  #status.ok  { color: var(--green); }
+  #timing { font-size: 11px; color: #8a8f8a; font-family: "SF Mono", Consolas, monospace; }
+</style>
+</head>
+<body>
+
+<div class="tabs">
+  <button class="tab on" id="tabRec">販売記録</button>
+  <button class="tab" id="tabCard">カード決済台帳</button>
+  <button class="tab" id="tabDay">日付でまとめて</button>
+</div>
+
+<div class="bar">
+  <span id="invCtl" style="display:flex;align-items:center;gap:10px">
+    <label for="invoice">伝票番号</label>
+    <input id="invoice" type="text" inputmode="numeric" autocomplete="off">
+    <button class="btn" id="btnLookup">表示</button>
+  </span>
+  <span id="dayCtl">
+    <label for="dayDate">会計日</label>
+    <button class="btn btn-nav" id="btnPrevDay" title="前の日">◀</button>
+    <input id="dayDate" type="date">
+    <button class="btn btn-nav" id="btnNextDay" title="次の日">▶</button>
+    <button class="btn" id="btnDayLoad">表示</button>
+  </span>
+  <div class="spacer"></div>
+  <div class="hint" id="hint"></div>
+</div>
+
+<div class="body" id="body"></div>
+
+<div class="foot">
+  <button class="btn btn-main" id="btnSave" disabled>保存して次へ</button>
+  <button class="btn btn-danger" id="btnDelete" disabled>この伝票を削除</button>
+  <div class="spacer"></div>
+  <span id="timing"></span>
+  <span id="status"></span>
+</div>
+
+<script>
+// =====================================================================
+// 伝票を開いて確認
+//
+// タブごとに触るシートを絞ってある。
+//   販売記録タブ      … 確認済み／カード決済のチェック、技術料の修正、削除
+//                       カード決済の伝票なら、カード決済台帳の精算済も同じ画面・
+//                       同じ保存で付けられる（2026-10。タブを切り替えて番号を
+//                       打ち直す手間をなくした）
+//   カード決済台帳タブ … 精算済のチェック（入金確認の突合）。カード会社の明細から
+//                       台帳だけを見たいとき用に残してある
+//   日付でまとめてタブ … 会計日を選ぶと、その日の伝票を一覧にする。未チェックの伝票は
+//                       確認済みを付けた状態で並ぶので、技術料を見たい伝票だけ外して
+//                       確定する（2026-10）。自由入力を使った伝票は最初から外してある。
+//                       カード決済の伝票は行ごとにカード決済を付ける（確認済みは自動で外れる）
+//
+// 技術料台帳は触らない。月末の「技術料台帳の整合チェック」が販売記録を正として
+// 値ごと直すので、ここで先回りして書く必要がない。
+//
+// 紙を1枚めくるごとに「番号 → Enter → 1 → Enter」で終わる形にしている。
+// トグルはシートの現在の状態をそのまま映す（開いた時点で処理済みか分かるように）。
+// =====================================================================
+var MODE_REC  = "rec";
+var MODE_CARD = "card";
+var MODE_DAY  = "day";
+var mode = MODE_REC;
+
+var dayRows = null;    // 日付でまとめて：サーバから受け取った一覧（ui.chk / ui.card を足して持つ）
+var dayDateShown = ""; // 一覧を表示している会計日
+
+var slip = null;       // 表示中の1件（サーバから受け取ったまま）
+var busy = false;      // 通信中（二重送信の防止）
+var deleting = false;  // 削除の確認パネルを出している間は Enter を横取りしない
+
+var elInv    = document.getElementById("invoice");
+var elBody   = document.getElementById("body");
+var elSave   = document.getElementById("btnSave");
+var elDelete = document.getElementById("btnDelete");
+var elStatus = document.getElementById("status");
+var elTiming = document.getElementById("timing");
+var elHint   = document.getElementById("hint");
+
+function yen(n) { return "¥" + (Number(n) || 0).toLocaleString(); }
+function esc(s) {
+  return String(s == null ? "" : s)
+    .replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function setStatus(msg, kind) {
+  elStatus.textContent = msg || "";
+  elStatus.className = kind || "";
+}
+function showTiming(res) {
+  if (!res || !res.ms) { elTiming.textContent = ""; return; }
+  var laps = (res.laps && res.laps.length) ? "（" + res.laps.join(" / ") + "）" : "";
+  elTiming.textContent = (res.ms / 1000).toFixed(1) + "秒" + laps;
+}
+function setBusy(on) {
+  busy = on;
+  document.getElementById("btnLookup").disabled = on;
+  ["btnPrevDay", "btnNextDay", "btnDayLoad"].forEach(function (id) { document.getElementById(id).disabled = on; });
+  if (mode === MODE_DAY) {
+    elSave.disabled = on || dayCounts().total === 0;
+    elDelete.disabled = true;
+    return;
+  }
+  elSave.disabled   = on || !slip;
+  elDelete.disabled = on || !slip || mode !== MODE_REC;
+}
+
+// ---- タブ ----
+function switchMode(next) {
+  if (busy || mode === next) return;
+  mode = next;
+  document.getElementById("tabRec").className  = "tab" + (mode === MODE_REC  ? " on" : "");
+  document.getElementById("tabCard").className = "tab" + (mode === MODE_CARD ? " on" : "");
+  document.getElementById("tabDay").className  = "tab" + (mode === MODE_DAY  ? " on" : "");
+  elDelete.style.display = (mode === MODE_REC) ? "" : "none";
+  document.getElementById("invCtl").style.display = (mode === MODE_DAY) ? "none" : "flex";
+  document.getElementById("dayCtl").style.display = (mode === MODE_DAY) ? "flex" : "none";
+  paintHint();
+  if (mode === MODE_DAY) {
+    slip = null;
+    setStatus("");
+    elTiming.textContent = "";
+    elSave.textContent = "確定";
+    loadDay();
+    return;
+  }
+  elSave.textContent = "保存して次へ";
+  slip = null;
+  render(null);
+  backToInput();
+  setStatus("");
+  elTiming.textContent = "";
+}
+
+function paintHint() {
+  if (mode === MODE_DAY) {
+    elHint.innerHTML = '未チェックの伝票には確認済みが付いた状態で並びます。<br>' +
+      '技術料を確認したい伝票だけ外して <b>確定</b>。カード決済の伝票は「カード」に付けてください';
+    return;
+  }
+  elHint.innerHTML = (mode === MODE_REC)
+    ? '番号を入れて <b>Enter</b> → <b>1</b> で確認済みを付けて <b>Enter</b> で保存<br>' +
+      '<b>1</b> 確認済み ／ <b>2</b> カード決済 ／ <b>3</b> 精算済（カード決済の伝票） ／ <b>Esc</b> 番号入力に戻る'
+    : 'カード会社の明細と突き合わせて精算済にチェックする画面です<br>' +
+      '番号を入れて <b>Enter</b> → <b>1</b> で精算済を付けて <b>Enter</b> で保存 ／ <b>Esc</b> 戻る';
+}
+
+function backToInput() {
+  slip = null;
+  setBusy(false);
+  if (mode === MODE_DAY) return;
+  elInv.value = "";
+  elInv.focus();
+}
+
+// ---- 伝票を引く ----
+function lookup() {
+  if (busy) return;
+  var no = elInv.value.trim();
+  if (!no) { elInv.focus(); return; }
+  setBusy(true);
+  setStatus("伝票 " + no + " を探しています…");
+  elBody.innerHTML = '<div class="placeholder">読み込み中…</div>';
+  var runner = google.script.run.withSuccessHandler(onLookup).withFailureHandler(onFail);
+  if (mode === MODE_REC) runner.uiLookupSlip(no);
+  else                   runner.uiLookupCard(no);
+}
+
+function onLookup(res) {
+  setBusy(false);
+  showTiming(res);
+  if (!res || res.result === "error" || res.result === "notfound") {
+    slip = null;
+    render(null);
+    setStatus((res && res.message) || "読み込みに失敗しました", "err");
+    elInv.focus(); elInv.select();
+    return;
+  }
+  if (res.hits.length > 1) {
+    slip = null;
+    renderPick(res.hits);
+    setStatus("同じ伝票番号が" + res.hits.length + "行あります。どの行か選んでください", "err");
+    return;
+  }
+  show(res.hits[0]);
+}
+
+function show(view) {
+  slip = view;
+  render(view);
+  setStatus("");
+  setBusy(false);
+  elSave.focus();     // ここで Enter を押すとそのまま保存になる
+}
+
+function onFail(e) {
+  setBusy(false);
+  setStatus("通信エラー：" + (e && e.message ? e.message : e), "err");
+}
+
+// ---- 描画 ----
+function render(v) {
+  if (mode === MODE_DAY) return;   // 日付でまとめては renderDay が描く
+  if (!v) {
+    elBody.innerHTML =
+      '<div class="placeholder"><div class="big">' +
+      (mode === MODE_REC
+        ? '紙の明細書の伝票番号を入力してください。'
+        : 'カード会社の明細の伝票番号を入力してください。') +
+      '</div><div>' +
+      (mode === MODE_REC
+        ? '更新するのは販売記録と、カード決済の伝票ならカード決済台帳の「精算済」です。技術料台帳は月末の整合チェックで揃います。'
+        : '更新するのはカード決済台帳の「精算済」だけです。') +
+      '</div></div>';
+    elSave.disabled = true;
+    elDelete.disabled = true;
+    return;
+  }
+  if (mode === MODE_REC) renderRec(v); else renderCard(v);
+  elSave.disabled = false;
+  elDelete.disabled = (mode !== MODE_REC);
+}
+
+function metaRow(label, value) {
+  return '<tr><th>' + label + '</th><td>' + value + '</td></tr>';
+}
+
+function renderRec(v) {
+  var badges = v.freeInput ? '<span class="badge badge-free">自由入力あり</span>' : '';
+  var notes = v.notes && v.notes.length
+    ? '<div class="card"><div class="notes">' +
+      v.notes.map(function (n) { return "<div>" + esc(n) + "</div>"; }).join("") + '</div></div>'
+    : '';
+
+  elBody.innerHTML =
+    '<div class="cols">' +
+      '<div class="col-l">' +
+        '<div class="card"><h3>明細</h3><pre class="items">' + esc(v.items) + '</pre></div>' +
+        '<div class="card"><h3>技術料の内訳（記録時のスナップショット）</h3>' +
+          '<pre class="snap">' + esc(v.gigiSnapshot || "（なし）") + '</pre></div>' +
+      '</div>' +
+      '<div class="col-r">' +
+        '<div class="card">' +
+          (badges ? '<div style="margin-bottom:8px">' + badges + '</div>' : '') +
+          '<table class="meta">' +
+            metaRow("伝票番号", '<b>' + esc(v.invoiceNo) + '</b>　<span class="muted">販売記録 ' + v.sheetRow + '行目</span>') +
+            metaRow("会計日", esc(v.visitDate) + '　<span class="muted">記録 ' + esc(v.recordedAt) + '</span>') +
+            metaRow("飼い主", esc(v.owner)) +
+            metaRow("ペット", esc(v.pet) + (v.animal ? '（' + esc(v.animal) + '）' : '')) +
+            metaRow("担当者", esc(v.staff) + '　<span class="muted">' + v.staffCount + '名</span>') +
+            metaRow("合計", '<span class="total">' + yen(v.total) + '</span>') +
+          '</table>' +
+        '</div>' +
+        '<div class="card"><h3>技術料（販売記録に反映）</h3>' +
+          '<div class="gigi-row">' +
+            '<div><label>通常技術料</label><input id="gigiNon" type="number" step="1" min="0" value="' + (v.gigiNon || 0) + '"></div>' +
+            '<div><label>ワクチン技術料</label><input id="gigiVac" type="number" step="1" min="0" value="' + (v.gigiVac || 0) + '"></div>' +
+          '</div>' +
+        '</div>' +
+        '<div class="card"><h3>チェック</h3>' +
+          '<div class="toggles">' +
+            '<div class="toggle" id="tg1"><span class="mark">□</span> 確認済み<span class="key">キー 1</span></div>' +
+            '<div class="toggle" id="tg2"><span class="mark">□</span> カード決済<span class="key">キー 2</span></div>' +
+            ledgerToggleHtml(v.ledger) +
+          '</div>' +
+          ledgerNoteHtml(v.ledger) +
+        '</div>' +
+        notes +
+      '</div>' +
+    '</div>';
+
+  // トグルの初期値はシートの現在の状態そのまま。開いた時点で「いま確認済みか」が
+  // 見て分かるようにするため、勝手にONにはしない。
+  v.ui1 = (v.checked === true);
+  v.ui2 = (v.card === true);
+  v.ui3 = hasLedgerRow(v) ? (v.ledger.view.settled === true) : false;
+  paintToggles();
+
+  document.getElementById("tg1").addEventListener("click", function () { toggle(1); });
+  document.getElementById("tg2").addEventListener("click", function () { toggle(2); });
+  if (document.getElementById("tg3")) {
+    document.getElementById("tg3").addEventListener("click", function () { toggle(3); });
+  }
+  ["gigiNon", "gigiVac"].forEach(function (id) {
+    document.getElementById(id).addEventListener("input", markChanged);
+  });
+}
+
+// 販売記録タブの「チェック」欄に足す、カード決済台帳の精算済。
+// サーバはカード決済にチェックがある伝票のときだけ ledger を付けてくる。
+// ダイアログの高さ（620px）で下に隠れないよう、別の欄にせず
+// 確認済み・カード決済と同じ列に3つ目のボタンとして並べる。
+function hasLedgerRow(v) {
+  return !!(v && v.ledger && v.ledger.state === "found" && v.ledger.view);
+}
+function ledgerToggleHtml(ld) {
+  if (!ld || ld.state !== "found") return "";
+  return '<div class="toggle toggle-ledger" id="tg3"><span class="mark">□</span> 精算済<span class="key">キー 3（台帳）</span></div>';
+}
+function ledgerNoteHtml(ld) {
+  if (!ld) return "";
+  if (ld.state === "found") {
+    var lv = ld.view;
+    return '<div class="ledger-info">精算済＝カード決済台帳 ' + lv.sheetRow + '行目' +
+      (lv.aggregated ? '　<span class="badge badge-free">' + esc(lv.aggregated) + ' 給与反映済み</span>' : '') +
+      '　入金を確認してから付けてください</div>';
+  }
+  if (ld.state === "missing") {
+    return '<div class="ledger-info">カード決済台帳にはまだ転記されていません（月次集計のあとで精算済を付けられます）</div>';
+  }
+  if (ld.state === "multiple") {
+    return '<div class="notes" style="margin-top:6px"><div>カード決済台帳に同じ伝票番号が ' + ld.count +
+      ' 行あります。精算済は「カード決済台帳」タブで付けてください</div></div>';
+  }
+  return '<div class="notes" style="margin-top:6px"><div>カード決済台帳を読めませんでした（' + esc(ld.message || "") +
+    '）。精算済は「カード決済台帳」タブで付けてください</div></div>';
+}
+
+function renderCard(v) {
+  var badges = '<span class="badge badge-card">カード決済</span>' +
+               (v.aggregated ? '<span class="badge badge-free">' + esc(v.aggregated) + ' 給与反映済み</span>' : '');
+  var notes = v.notes && v.notes.length
+    ? '<div class="card"><div class="notes">' +
+      v.notes.map(function (n) { return "<div>" + esc(n) + "</div>"; }).join("") + '</div></div>'
+    : '';
+
+  elBody.innerHTML =
+    '<div class="cols">' +
+      '<div class="col-l">' +
+        '<div class="card"><h3>明細</h3><pre class="items">' + esc(v.items) + '</pre></div>' +
+      '</div>' +
+      '<div class="col-r">' +
+        '<div class="card">' +
+          '<div style="margin-bottom:8px">' + badges + '</div>' +
+          '<table class="meta">' +
+            metaRow("伝票番号", '<b>' + esc(v.invoiceNo) + '</b>　<span class="muted">カード決済台帳 ' + v.sheetRow + '行目</span>') +
+            metaRow("会計日", esc(v.visitDate) + '　<span class="muted">記録 ' + esc(v.recordedAt) + '</span>') +
+            metaRow("飼い主", esc(v.owner)) +
+            metaRow("ペット", esc(v.pet)) +
+            metaRow("担当者", esc(v.staff)) +
+            metaRow("合計", '<span class="total">' + yen(v.total) + '</span>') +
+            metaRow("技術料", '通常 ' + yen(v.gigiNon) + '　ワクチン ' + yen(v.gigiVac)) +
+          '</table>' +
+        '</div>' +
+        '<div class="card"><h3>入金確認</h3>' +
+          '<div class="toggles">' +
+            '<div class="toggle" id="tg1"><span class="mark">□</span> 精算済<span class="key">キー 1</span></div>' +
+          '</div>' +
+        '</div>' +
+        notes +
+      '</div>' +
+    '</div>';
+
+  v.ui1 = (v.settled === true);  // 初期値はシートの現在の状態そのまま
+  paintToggles();
+  document.getElementById("tg1").addEventListener("click", function () { toggle(1); });
+}
+
+function renderPick(hits) {
+  var where = (mode === MODE_REC) ? "販売記録" : "カード決済台帳";
+  var rows = hits.map(function (h, i) {
+    return '<tr class="pick" data-i="' + i + '">' +
+      '<td><b>' + esc(h.invoiceNo) + '</b></td>' +
+      '<td>' + esc(h.visitDate) + '</td>' +
+      '<td>' + esc(h.owner) + ' ' + esc(h.pet) + '</td>' +
+      '<td>' + yen(h.total) + '</td>' +
+      '<td>' + esc(h.recordedAt) + '</td>' +
+      '<td class="muted">' + where + ' ' + h.sheetRow + '行目</td></tr>';
+  }).join("");
+  elBody.innerHTML =
+    '<div class="card"><h3>同じ伝票番号の行が複数あります。開く行を選んでください</h3>' +
+    '<table class="meta">' + rows + '</table></div>';
+  Array.prototype.forEach.call(elBody.querySelectorAll("tr.pick"), function (tr) {
+    tr.addEventListener("click", function () { show(hits[Number(tr.getAttribute("data-i"))]); });
+  });
+  elSave.disabled = true;
+  elDelete.disabled = true;
+}
+
+function paintToggles() {
+  if (!slip) return;
+  var a = document.getElementById("tg1");
+  if (a) {
+    a.className = "toggle" + (slip.ui1 ? " on" : "");
+    a.querySelector(".mark").textContent = slip.ui1 ? "☑" : "□";
+  }
+  var b = document.getElementById("tg2");
+  if (b) {
+    b.className = "toggle" + (slip.ui2 ? " on" : "");
+    b.querySelector(".mark").textContent = slip.ui2 ? "☑" : "□";
+  }
+  var c = document.getElementById("tg3");
+  if (c) {
+    c.className = "toggle toggle-ledger" + (slip.ui3 ? " on" : "");   // 台帳のボタンは色を分ける
+    c.querySelector(".mark").textContent = slip.ui3 ? "☑" : "□";
+  }
+}
+
+function toggle(which) {
+  if (!slip) return;
+  if (which === 1) slip.ui1 = !slip.ui1;
+  else if (which === 2) { if (document.getElementById("tg2")) slip.ui2 = !slip.ui2; }
+  else if (which === 3) { if (document.getElementById("tg3")) slip.ui3 = !slip.ui3; }
+  paintToggles();
+}
+
+function markChanged() {
+  if (!slip) return;
+  var n = document.getElementById("gigiNon");
+  var v = document.getElementById("gigiVac");
+  if (!n || !v) return;
+  n.className = (Number(n.value) !== Number(slip.gigiNon)) ? "changed" : "";
+  v.className = (Number(v.value) !== Number(slip.gigiVac)) ? "changed" : "";
+}
+
+// ---- 日付でまとめて ----
+function pad2(n) { return ("0" + n).slice(-2); }
+function ymd(d) { return d.getFullYear() + "-" + pad2(d.getMonth() + 1) + "-" + pad2(d.getDate()); }
+function parseYmd(s) {
+  var m = String(s || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])) : null;
+}
+// 初期表示は前日（翌朝に前日分をまとめて確認する想定）。ローカルの日付で組み立てる
+// （toISOString は UTC になり、朝9時前だと日付が1日ずれる）
+function yesterday() { var d = new Date(); d.setDate(d.getDate() - 1); return ymd(d); }
+function weekday(s) { var d = parseYmd(s); return d ? "日月火水木金土".charAt(d.getDay()) : ""; }
+
+function shiftDay(n) {
+  if (busy) return;
+  var d = parseYmd(document.getElementById("dayDate").value) || parseYmd(yesterday());
+  d.setDate(d.getDate() + n);
+  document.getElementById("dayDate").value = ymd(d);
+  loadDay();
+}
+
+function loadDay() {
+  if (busy) return;
+  var el = document.getElementById("dayDate");
+  if (!el.value) el.value = yesterday();
+  var date = el.value;
+  dayRows = null;
+  setBusy(true);
+  setStatus(date + " の伝票を読み込んでいます…");
+  elBody.innerHTML = '<div class="placeholder">読み込み中…</div>';
+  google.script.run.withSuccessHandler(onDay).withFailureHandler(onFail).uiListDay(date);
+}
+
+function onDay(res) {
+  showTiming(res);
+  if (!res || res.result !== "success") {
+    dayRows = null;
+    setBusy(false);
+    elBody.innerHTML = '<div class="placeholder">表示できませんでした</div>';
+    setStatus((res && res.message) || "読み込みに失敗しました", "err");
+    return;
+  }
+  dayDateShown = res.date;
+  var keep = lastDayMessage; lastDayMessage = null;
+  dayRows = res.rows.map(function (r) {
+    var done = r.checked || r.card;
+    // 初期値：未チェックは確認済みを付ける。ただし自由入力を使った伝票は
+    // 技術料の追記が要るかもしれないので外しておく。
+    r.ui = { chk: !done && !r.freeInput, card: false };
+    r.done = done;
+    return r;
+  });
+  renderDay();
+  setBusy(false);
+  if (keep) { elStatus.textContent = keep.text; elStatus.className = keep.kind; }
+}
+
+function dayCounts() {
+  var c = { chk: 0, card: 0, off: 0, done: 0, total: 0 };
+  (dayRows || []).forEach(function (r) {
+    if (r.done) { c.done++; return; }
+    if (r.ui.card) c.card++;
+    else if (r.ui.chk) c.chk++;
+    else c.off++;
+  });
+  c.total = c.chk + c.card;
+  return c;
+}
+
+function renderDay() {
+  var rows = dayRows || [];
+  var head = '<div class="day-head"><span class="d">' + esc(dayDateShown) + '（' + weekday(dayDateShown) + '）</span>' +
+             '<span class="c">全 ' + rows.length + ' 件</span></div>';
+  if (!rows.length) {
+    elBody.innerHTML = head + '<div class="placeholder"><div class="big">この日の会計はありません</div></div>';
+    paintDaySum();
+    return;
+  }
+  var trs = rows.map(function (r, i) {
+    var name = esc(r.owner) + (r.pet ? '<span class="muted">・' + esc(r.pet) + '</span>' : '');
+    var badge = r.freeInput ? '<span class="badge badge-free">自由入力</span>' : '';
+    if (r.done) {
+      return '<tr class="done">' +
+        '<td class="ck">' + (r.checked ? '✓' : '') + '</td>' +
+        '<td class="ck">' + (r.card ? '✓' : '') + '</td>' +
+        '<td class="inv">' + esc(r.invoiceNo) + '</td><td>' + esc(r.time) + '</td>' +
+        '<td>' + name + '</td><td class="r">' + yen(r.total) + '</td><td class="r">' + yen(r.gigi) + '</td>' +
+        '<td>済み ' + badge + '</td></tr>';
+    }
+    return '<tr class="todo" data-i="' + i + '">' +
+      '<td class="ck"><input type="checkbox" data-k="chk" data-i="' + i + '"></td>' +
+      '<td class="ck"><input type="checkbox" data-k="card" data-i="' + i + '"></td>' +
+      '<td class="inv">' + esc(r.invoiceNo) + '</td><td>' + esc(r.time) + '</td>' +
+      '<td>' + name + '</td><td class="r">' + yen(r.total) + '</td><td class="r">' + yen(r.gigi) + '</td>' +
+      '<td>' + badge + '</td></tr>';
+  }).join("");
+  elBody.innerHTML = head +
+    '<table class="day"><thead><tr><th class="ck">確認済み</th><th class="ck">カード</th><th>伝票</th><th>記録</th>' +
+    '<th>飼い主・ペット</th><th class="r">合計</th><th class="r">技術料</th><th></th></tr></thead><tbody>' + trs + '</tbody></table>';
+
+  Array.prototype.forEach.call(elBody.querySelectorAll("tr.todo"), function (tr) {
+    tr.addEventListener("click", function (e) {
+      var i = Number(tr.getAttribute("data-i"));
+      if (e.target && e.target.tagName === "INPUT") {
+        setDayFlag(i, e.target.getAttribute("data-k"), e.target.checked);
+      } else {
+        // 行のどこを押しても確認済みを切り替える（チェック欄を狙わなくて済むように）
+        setDayFlag(i, "chk", !dayRows[i].ui.chk);
+      }
+    });
+  });
+  paintDayRows();
+}
+
+// 確認済みとカード決済は片方だけ（カード決済の伝票は月次集計でカードの扱いになるため、
+// 確認済みを一緒に付ける意味が無い。どちらを付けたか画面で迷わないようにする）
+function setDayFlag(i, k, on) {
+  var r = dayRows[i];
+  if (!r || r.done || busy) return;
+  if (k === "card") { r.ui.card = on; if (on) r.ui.chk = false; }
+  else              { r.ui.chk = on;  if (on) r.ui.card = false; }
+  paintDayRows();
+}
+
+function paintDayRows() {
+  Array.prototype.forEach.call(elBody.querySelectorAll("tr.todo"), function (tr) {
+    var r = dayRows[Number(tr.getAttribute("data-i"))];
+    tr.querySelector('input[data-k="chk"]').checked  = r.ui.chk;
+    tr.querySelector('input[data-k="card"]').checked = r.ui.card;
+    tr.className = "todo" + ((r.ui.chk || r.ui.card) ? "" : " off");
+  });
+  paintDaySum();
+}
+
+function paintDaySum() {
+  var c = dayCounts();
+  elSave.textContent = c.total ? "確定（" + c.total + "件）" : "確定";
+  elSave.disabled = busy || c.total === 0;
+  if (!dayRows) return;
+  setStatus("");
+  elStatus.innerHTML = '<span class="day-sum">確定すると 確認済み <b>' + c.chk + '</b> 件・カード決済 <b>' + c.card +
+    '</b> 件を記録します　<span class="muted">（付けないまま ' + c.off + ' 件・済み ' + c.done + ' 件）</span></span>';
+}
+
+function saveDay() {
+  if (busy || !dayRows) return;
+  var c = dayCounts();
+  if (!c.total) return;
+  if (!window.confirm(dayDateShown + " の伝票に\n確認済み " + c.chk + " 件・カード決済 " + c.card + " 件 を記録します。\n\nよろしいですか？")) return;
+  var items = [];
+  dayRows.forEach(function (r) {
+    if (r.done || !(r.ui.chk || r.ui.card)) return;
+    items.push({ invoiceNo: r.invoiceNo, sheetRow: r.sheetRow, checked: r.ui.chk === true, card: r.ui.card === true });
+  });
+  setBusy(true);
+  setStatus("記録しています…");
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setBusy(false);
+      showTiming(res);
+      if (!res || res.result !== "success") {
+        setStatus((res && res.message) || "記録に失敗しました", "err");
+        return;
+      }
+      var msg = "確認済み " + res.checked + " 件・カード決済 " + res.card + " 件を記録しました";
+      var sk = res.skipped || [];
+      // 一覧を読み直して、今のシートの状態を映す
+      loadDay();
+      if (sk.length) {
+        setStatus(msg + "　⚠ 記録しなかった伝票：" + sk.map(function (x) { return x.invoiceNo + "（" + x.reason + "）"; }).join("、"), "err");
+      } else {
+        setStatus(msg, "ok");
+      }
+      lastDayMessage = { text: elStatus.textContent, kind: elStatus.className };
+    })
+    .withFailureHandler(onFail)
+    .uiSaveDay({ date: dayDateShown, items: items });
+}
+var lastDayMessage = null;   // 確定後に一覧を読み直しても、結果の文言を消さないため
+
+// ---- 保存 ----
+function save(confirmed) {
+  if (mode === MODE_DAY) { saveDay(); return; }
+  if (busy || !slip) return;
+  setBusy(true);
+  setStatus("保存しています…");
+
+  if (mode === MODE_REC) {
+    var n = document.getElementById("gigiNon");
+    var g = document.getElementById("gigiVac");
+    var payload = {
+      invoiceNo: slip.invoiceNo,
+      sheetRow:  slip.sheetRow,
+      checked:   slip.ui1 === true,
+      card:      slip.ui2 === true,
+      gigiNon:   n ? Number(n.value) || 0 : slip.gigiNon,
+      gigiVac:   g ? Number(g.value) || 0 : slip.gigiVac
+    };
+    // 精算済は「変えたときだけ」送る（触っていない台帳には書かない）
+    if (hasLedgerRow(slip) && slip.ui3 !== (slip.ledger.view.settled === true)) {
+      payload.ledger = {
+        sheetRow: slip.ledger.view.sheetRow,
+        settled: slip.ui3 === true,
+        confirmUnsettle: confirmed === true
+      };
+    }
+    google.script.run
+      .withSuccessHandler(function (res) {
+        var sum = "確認済み " + (payload.checked ? "✓" : "—") + " ／ カード決済 " + (payload.card ? "✓" : "—");
+        if (res && res.ledgerSaved === true)  sum += " ／ 精算済 ✓";
+        if (res && res.ledgerSaved === false) sum += " ／ 精算済 —";
+        onSave(res, sum);
+      })
+      .withFailureHandler(onFail)
+      .uiSaveSlip(payload);
+  } else {
+    var cardPayload = {
+      invoiceNo: slip.invoiceNo,
+      sheetRow:  slip.sheetRow,
+      settled:   slip.ui1 === true,
+      confirmUnsettle: confirmed === true
+    };
+    google.script.run
+      .withSuccessHandler(function (res) { onSave(res, "精算済 " + (cardPayload.settled ? "✓" : "—")); })
+      .withFailureHandler(onFail)
+      .uiSaveCard(cardPayload);
+  }
+}
+
+function onSave(res, summary) {
+  setBusy(false);
+  showTiming(res);
+  if (!res || res.result === "error") {
+    setStatus((res && res.message) || "保存に失敗しました", "err");
+    return;
+  }
+  if (res.result === "confirm") {
+    if (window.confirm(res.message)) { save(true); }
+    else { setStatus("保存を取りやめました"); }
+    return;
+  }
+  var msg = "伝票 " + res.invoiceNo + " を保存しました（" + summary + "）";
+  if (res.warnings && res.warnings.length) {
+    setStatus(msg + "　⚠ " + res.warnings.join(" ／ "), "err");
+  } else {
+    setStatus(msg, "ok");
+  }
+  render(null);
+  backToInput();
+}
+
+// ---- 削除（販売記録タブのみ）----
+function askDelete() {
+  if (busy || !slip || mode !== MODE_REC) return;
+  var v = slip;
+  var panel = document.createElement("div");
+  panel.className = "danger";
+  panel.innerHTML =
+    '<h3>伝票 ' + esc(v.invoiceNo) + ' を削除します</h3>' +
+    '<p>' + esc(v.visitDate) + '　' + esc(v.owner) + ' ' + esc(v.pet) + '　' + yen(v.total) + '<br>' +
+    '販売記録・技術料台帳・ワクチン台帳・カード決済台帳から、この伝票の行をすべて消します。<br>' +
+    '<b>元には戻せません。</b></p>' +
+    '<button class="btn btn-danger" id="btnDoDelete">削除する</button> ' +
+    '<button class="btn" id="btnCancelDelete">やめる</button>';
+  elBody.insertBefore(panel, elBody.firstChild);
+  elBody.scrollTop = 0;
+  deleting = true;
+  document.getElementById("btnCancelDelete").addEventListener("click", closeDeletePanel);
+  document.getElementById("btnDoDelete").addEventListener("click", doDelete);
+  document.getElementById("btnDoDelete").focus();
+}
+
+function closeDeletePanel() {
+  deleting = false;
+  var panel = elBody.querySelector(".danger");
+  if (panel) panel.parentNode.removeChild(panel);
+  if (slip) elSave.focus();
+}
+
+function doDelete() {
+  if (busy || !slip) return;
+  setBusy(true);
+  deleting = false;
+  setStatus("削除しています…");
+  var no = slip.invoiceNo;
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setBusy(false);
+      if (!res || res.result === "error") {
+        setStatus((res && res.message) || "削除に失敗しました", "err");
+        return;
+      }
+      setStatus("伝票 " + res.invoiceNo + " を削除しました（" + res.removed + "）", "ok");
+      render(null);
+      backToInput();
+    })
+    .withFailureHandler(onFail)
+    .uiDeleteSlip({ invoiceNo: no, sheetRow: slip.sheetRow, confirmDelete: true });
+}
+
+// ---- キー操作 ----
+// 文字を打っている最中（input）は横取りしない。
+function typing(e) {
+  var t = e.target;
+  return t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA");
+}
+
+elInv.addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { e.preventDefault(); lookup(); }
+});
+document.getElementById("btnLookup").addEventListener("click", lookup);
+document.getElementById("tabRec").addEventListener("click", function () { switchMode(MODE_REC); });
+document.getElementById("tabCard").addEventListener("click", function () { switchMode(MODE_CARD); });
+document.getElementById("tabDay").addEventListener("click", function () { switchMode(MODE_DAY); });
+document.getElementById("btnPrevDay").addEventListener("click", function () { shiftDay(-1); });
+document.getElementById("btnNextDay").addEventListener("click", function () { shiftDay(1); });
+document.getElementById("btnDayLoad").addEventListener("click", loadDay);
+document.getElementById("dayDate").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { e.preventDefault(); loadDay(); }
+});
+elSave.addEventListener("click", function () { save(false); });
+elDelete.addEventListener("click", askDelete);
+
+document.addEventListener("keydown", function (e) {
+  if (mode === MODE_DAY) return;   // 日付でまとめてはマウス・タップで操作する（Enterで誤って確定しないように）
+  if (e.key === "Escape") {
+    e.preventDefault();
+    if (deleting) { closeDeletePanel(); return; }
+    render(null); backToInput();
+    return;
+  }
+  if (busy || !slip) return;
+  if (deleting) return;              // 確認パネルのボタンに任せる
+
+  if (e.key === "Enter") {
+    if (e.target && e.target.id === "invoice") return;   // 番号欄は自前のハンドラ
+    e.preventDefault();
+    // 技術料を打ち終えた直後の Enter も保存にする
+    if (e.target && (e.target.id === "gigiNon" || e.target.id === "gigiVac")) e.target.blur();
+    save(false);
+    return;
+  }
+  if (typing(e)) return;
+  if (e.key === "1") { e.preventDefault(); toggle(1); }
+  if (e.key === "2") { e.preventDefault(); toggle(2); }
+  if (e.key === "3") { e.preventDefault(); toggle(3); }
+});
+
+paintHint();
+render(null);
+elInv.focus();
+</script>
+</body>
+</html>

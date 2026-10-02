@@ -2629,10 +2629,41 @@ function uiLookupSlip(invoiceNo) {
 
     const hits = rows.map(function (row) { return buildSlipView_(ss, rec, row); });
     t.lap("組み立て");
+
+    // カード決済の伝票なら、カード決済台帳も同じ通信の中で引く（2026-10）。
+    // 以前は販売記録で引いたあと、タブを切り替えて同じ番号をもう一度打っていた。
+    // 現金の会計では台帳を読みに行かない（時間をかけないため）。
+    if (hits.some(function (h) { return h.card; })) {
+      attachCardLedger_(ss, hits);
+      t.lap("台帳");
+    }
     return { result: "success", hits: hits, ms: t.total(), laps: t.marks() };
   } catch (e) {
     return { result: "error", message: e.message };
   }
+}
+
+// 販売記録の伝票（カード決済にチェックがあるもの）に、カード決済台帳の状態を付ける。
+//   ledger.state:
+//     "found"    … 台帳に1行ある。ledger.view は buildCardView_ の形（精算済・集計済みなど）
+//     "missing"  … まだ台帳に無い（月次集計で転記される前）
+//     "multiple" … 同じ番号が複数行ある。どれか決められないのでカード決済台帳タブで扱う
+//     "error"    … 台帳が読めなかった。販売記録の表示・保存は続けられる
+function attachCardLedger_(ss, hits) {
+  let sheet = null;
+  try { sheet = ss.getSheetByName(SHEET_CARD_LEDGER); } catch (e) { sheet = null; }
+  hits.forEach(function (h) {
+    if (!h.card) return;
+    try {
+      if (!sheet || sheet.getLastRow() < 2) { h.ledger = { state: "missing" }; return; }
+      const rows = findInvoiceRows_(sheet, normInvoice(h.invoiceNo), "伝票番号");
+      if (rows.length === 1) h.ledger = { state: "found", view: buildCardView_(sheet, rows[0]) };
+      else if (rows.length === 0) h.ledger = { state: "missing" };
+      else h.ledger = { state: "multiple", count: rows.length };
+    } catch (e) {
+      h.ledger = { state: "error", message: e.message };
+    }
+  });
 }
 
 // 保存・削除の直前に行番号を引き直す。
@@ -2659,7 +2690,10 @@ function resolveRowByInvoice_(sheet, invoiceNo, sheetRow) {
 }
 
 // ===== ダイアログ：保存 =====
-// payload: { invoiceNo, sheetRow, checked, card, gigiNon, gigiVac, confirmAggregated }
+// payload: { invoiceNo, sheetRow, checked, card, gigiNon, gigiVac, confirmAggregated,
+//            ledger: { sheetRow, settled, confirmUnsettle } }
+// ledger は「カード決済台帳の精算済を変えたとき」だけ画面から来る（2026-10）。
+// 販売記録と同じ1回の保存で、カード決済台帳の精算済も書く。
 function uiSaveSlip(payload) {
   UI_COLMAP_CACHE = {};
   const lock = LockService.getScriptLock();
@@ -2689,6 +2723,22 @@ function uiSaveSlip(payload) {
     const missing = need.filter(function (n) { return !(n in C); });
     if (missing.length) {
       return { result: "error", message: "販売記録に次の列がありません：" + missing.join("、") };
+    }
+
+    // 精算済も変える場合は、販売記録に書く前に「確認が要るか」を確かめる。
+    // 給与に反映済みの伝票で精算済を外すときは、OKをもらってから両方書く
+    // （販売記録だけ先に書いてしまうと、取りやめたときに片方だけ保存された状態になる）。
+    let ledgerPayload = null;
+    if (payload.ledger && typeof payload.ledger === "object") {
+      ledgerPayload = {
+        invoiceNo:       payload.invoiceNo,
+        sheetRow:        Number(payload.ledger.sheetRow) || 0,
+        settled:         payload.ledger.settled === true,
+        confirmUnsettle: payload.ledger.confirmUnsettle === true
+      };
+      const pre = saveCardSettled_(ss, ledgerPayload, true);
+      if (pre.result === "confirm") return pre;
+      // 台帳側の行が見つからない等は、販売記録の保存は止めずに後で警告する
     }
 
     const cur = rec.getRange(row, 1, 1, found.cm.count).getValues()[0];
@@ -2725,11 +2775,28 @@ function uiSaveSlip(payload) {
 
     SpreadsheetApp.flush();
     t.lap("書き込み");
+
+    // カード決済台帳の精算済。販売記録は保存済みなので、ここで失敗しても
+    // 会計の保存は成功として返し、精算済だけ保存できなかったことを伝える
+    // （やり直しで販売記録を二度書かせないため）。
+    let ledgerSaved = null;
+    if (ledgerPayload) {
+      const cr = saveCardSettled_(ss, ledgerPayload, false);
+      if (cr.result === "success") {
+        ledgerSaved = ledgerPayload.settled;
+      } else {
+        warnings.push("精算済は保存できませんでした（" + (cr.message || "不明なエラー") +
+                      "）。カード決済台帳タブで付け直してください");
+      }
+      t.lap("台帳");
+    }
+
     const view = buildSlipView_(ss, rec, row);
     return {
       result: "success",
       invoiceNo: invoiceNo,
       warnings: warnings,
+      ledgerSaved: ledgerSaved,   // null=触っていない／true・false=精算済に書いた値
       view: view,
       ms: t.total(), laps: t.marks()
     };
@@ -2869,16 +2936,27 @@ function uiLookupCard(invoiceNo) {
   }
 }
 
-// payload: { invoiceNo, sheetRow, settled }
+// payload: { invoiceNo, sheetRow, settled, confirmUnsettle }
 function uiSaveCard(payload) {
   UI_COLMAP_CACHE = {};
   const lock = LockService.getScriptLock();
   if (!lock.tryLock(20000)) {
     return { result: "error", message: "他の処理が実行中です。少し待ってからもう一度お試しください。" };
   }
+  try {
+    return saveCardSettled_(SpreadsheetApp.getActiveSpreadsheet(), payload, false);
+  } finally {
+    lock.releaseLock();
+  }
+}
+
+// カード決済台帳の「精算済」を書く本体。
+// 「カード決済台帳」タブの保存と、販売記録タブでの一括保存（uiSaveSlip）の両方から呼ぶ。
+// 同じ処理を2か所に置かないため関数にしてある。ロックは呼ぶ側で取ること。
+// dryRun=true のときは書き込まず、確認が要るか・行が見つかるかだけを返す。
+function saveCardSettled_(ss, payload, dryRun) {
   const t = uiTimer_();
   try {
-    const ss = SpreadsheetApp.getActiveSpreadsheet();
     const sheet = ss.getSheetByName(SHEET_CARD_LEDGER);
     if (!sheet) return { result: "error", message: "カード決済台帳が見つかりません" };
 
@@ -2906,6 +2984,8 @@ function uiSaveCard(payload) {
       };
     }
 
+    if (dryRun) return { result: "ok" };
+
     sheet.getRange(row, C["精算済"] + 1).setValue(payload.settled === true);
     SpreadsheetApp.flush();
     t.lap("書き込み");
@@ -2915,6 +2995,191 @@ function uiSaveCard(payload) {
       invoiceNo: String(cur[C["伝票番号"]] || "").trim(),
       warnings: [],
       view: buildCardView_(sheet, row),
+      ms: t.total(), laps: t.marks()
+    };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  }
+}
+
+// ===== ダイアログ：日付でまとめて確認（2026-10） =====
+// 会計日を1日選ぶと、その日の伝票を一覧で返す。画面では未チェックの伝票に
+// 確認済みを付けた状態で並べ、技術料を見たい伝票だけ外して確定してもらう。
+// 番号を1件ずつ打つより速く、打ち間違いも起きない。
+//
+// 書くのは販売記録の「確認済み」「カード決済」だけ（どちらも ON にするだけで、外すことはしない）。
+// 精算済はここでは扱わない。入金の時期は会計日と関係がないため。
+const UI_DAY_MAX_ROWS = 300;   // 1日の会計がこれを超えることは無い（実データの最大は82件）
+const UI_DAY_GAP      = 40;    // 該当行の間がこれより空いたら別のかたまりとして読む
+
+// 会計日を "yyyy-MM-dd" にそろえる（シートには Date で入っている）
+function uiDayKey_(v) {
+  const d = parseVisitDate(v);
+  if (!d) return "";
+  return d.getFullYear() + "-" + ("0" + (d.getMonth() + 1)).slice(-2) + "-" + ("0" + d.getDate()).slice(-2);
+}
+
+// 行番号の配列を、近いもの同士のかたまりに分ける。
+// 前日分をあとから入力した行（実データで148件）は離れた場所にあるので、
+// 最初の行から最後の行まで1回で読むと、間の何千行も読むことになる。
+function uiRowClusters_(rows) {
+  const out = [];
+  rows.forEach(function (r) {
+    const cur = out[out.length - 1];
+    if (cur && r - cur.bottom <= UI_DAY_GAP) cur.bottom = r;
+    else out.push({ top: r, bottom: r });
+  });
+  return out;
+}
+
+function uiListDay(dateStr) {
+  UI_COLMAP_CACHE = {};
+  const t = uiTimer_();
+  try {
+    const m = String(dateStr || "").match(/^(\d{4})-(\d{2})-(\d{2})$/);
+    if (!m) return { result: "error", message: "日付の形式が正しくありません" };
+    const want = m[1] + "-" + m[2] + "-" + m[3];
+
+    const ss  = SpreadsheetApp.getActiveSpreadsheet();
+    const rec = ss.getSheetByName(SHEET_RECORDS);
+    if (!rec || rec.getLastRow() < 2) return { result: "success", date: want, rows: [], ms: t.total(), laps: t.marks() };
+    const cm = colMap_(rec);
+    const C  = cm.idx;
+    const need = ["会計日", "伝票番号", "確認済み", "カード決済"];
+    const missing = need.filter(function (n) { return !(n in C); });
+    if (missing.length) return { result: "error", message: "販売記録に次の列がありません：" + missing.join("、") };
+
+    // 会計日の列だけを読んで、その日の行を探す
+    const last  = rec.getLastRow();
+    const dates = rec.getRange(2, C["会計日"] + 1, last - 1, 1).getValues();
+    const hitRows = [];
+    dates.forEach(function (r, i) { if (uiDayKey_(r[0]) === want) hitRows.push(i + 2); });
+    t.lap("検索");
+    if (!hitRows.length) return { result: "success", date: want, rows: [], ms: t.total(), laps: t.marks() };
+    if (hitRows.length > UI_DAY_MAX_ROWS) {
+      return { result: "error", message: want + " の会計が " + hitRows.length + " 件あり、多すぎて一覧にできません" };
+    }
+
+    // 該当行を、かたまりごとにまとめて読む（1行ずつ読むと件数分の通信になる）
+    const tz = Session.getScriptTimeZone();
+    const rows = [];
+    uiRowClusters_(hitRows).forEach(function (cl) {
+      const n = cl.bottom - cl.top + 1;
+      const vals = rec.getRange(cl.top, 1, n, cm.count).getValues();
+      let bgs = null;
+      if ("明細" in C) {
+        try { bgs = rec.getRange(cl.top, C["明細"] + 1, n, 1).getBackgrounds(); } catch (e) { bgs = null; }
+      }
+      for (let k = 0; k < n; k++) {
+        const r = vals[k];
+        if (uiDayKey_(r[C["会計日"]]) !== want) continue;   // かたまりの間に挟まった別の日の行
+        const get = function (name) { return (name in C) ? r[C[name]] : ""; };
+        const stamp = get("記録日時");
+        rows.push({
+          sheetRow:  cl.top + k,
+          invoiceNo: String(get("伝票番号") == null ? "" : get("伝票番号")).trim(),
+          time:      (stamp instanceof Date) ? Utilities.formatDate(stamp, tz, "HH:mm") : "",
+          owner:     String(get("飼い主名") || ""),
+          pet:       String(get("ペット名") || ""),
+          total:     Number(get("合計")) || 0,
+          gigi:      (Number(get("通常技術料")) || 0) + (Number(get("ワクチン技術料")) || 0),
+          checked:   isChecked(get("確認済み")),
+          card:      isChecked(get("カード決済")),
+          freeInput: !!(bgs && String(bgs[k][0] || "").toLowerCase() === FREE_INPUT_COLOR)
+        });
+      }
+    });
+    t.lap("読み込み");
+    return { result: "success", date: want, rows: rows, ms: t.total(), laps: t.marks() };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  }
+}
+
+// payload: { date, items: [{ invoiceNo, sheetRow, checked, card }] }
+// 画面で ON にした伝票だけが来る。カード決済が ON の行は確認済みを付けない。
+// 書く直前に、行番号がその伝票のままか・まだ未チェックかを確かめる
+// （画面を開いている間に会計が入って行がずれる／別の端末で先にチェックされる場合があるため）。
+function uiSaveDay(payload) {
+  UI_COLMAP_CACHE = {};
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return { result: "error", message: "他の処理が実行中です。少し待ってからもう一度お試しください。" };
+  }
+  const t = uiTimer_();
+  try {
+    const items = (payload && Array.isArray(payload.items)) ? payload.items : [];
+    if (!items.length) return { result: "error", message: "記録する伝票がありません" };
+    if (items.length > UI_DAY_MAX_ROWS) return { result: "error", message: "一度に記録できるのは " + UI_DAY_MAX_ROWS + " 件までです" };
+
+    const ss  = SpreadsheetApp.getActiveSpreadsheet();
+    const rec = ss.getSheetByName(SHEET_RECORDS);
+    if (!rec || rec.getLastRow() < 2) return { result: "error", message: "販売記録が見つかりません" };
+    const cm = colMap_(rec);
+    const C  = cm.idx;
+    const need = ["伝票番号", "確認済み", "カード決済"];
+    const missing = need.filter(function (n) { return !(n in C); });
+    if (missing.length) return { result: "error", message: "販売記録に次の列がありません：" + missing.join("、") };
+
+    // 照合に使う3列を1回ずつ読む
+    const last  = rec.getLastRow();
+    const invs  = rec.getRange(2, C["伝票番号"] + 1, last - 1, 1).getValues();
+    const chks  = rec.getRange(2, C["確認済み"] + 1, last - 1, 1).getValues();
+    const cards = rec.getRange(2, C["カード決済"] + 1, last - 1, 1).getValues();
+    const byNo = {};
+    invs.forEach(function (r, i) {
+      const k = normInvoice(r[0]);
+      if (k) (byNo[k] = byNo[k] || []).push(i + 2);
+    });
+    t.lap("照合");
+
+    const colChk  = columnToLetter(C["確認済み"] + 1);
+    const colCard = columnToLetter(C["カード決済"] + 1);
+    const chkCells = [], cardCells = [], clearCells = [];
+    const skipped = [];
+    const done = {};
+    items.forEach(function (it) {
+      const no  = String(it && it.invoiceNo != null ? it.invoiceNo : "").trim();
+      const key = normInvoice(no);
+      const wantCard = it && it.card === true;
+      const wantChk  = !wantCard && it && it.checked === true;
+      if (!wantCard && !wantChk) return;
+      if (!key) { skipped.push({ invoiceNo: no, reason: "伝票番号がありません" }); return; }
+
+      let row = Number(it.sheetRow) || 0;
+      if (!(row >= 2 && row <= last && normInvoice(invs[row - 2][0]) === key)) {
+        const cand = byNo[key] || [];
+        if (cand.length !== 1) {
+          skipped.push({ invoiceNo: no, reason: cand.length ? "同じ番号が" + cand.length + "行あります" : "見つかりません" });
+          return;
+        }
+        row = cand[0];
+      }
+      if (done[row]) return;
+      if (isChecked(chks[row - 2][0]) || isChecked(cards[row - 2][0])) {
+        skipped.push({ invoiceNo: no, reason: "すでにチェック済み" });
+        return;
+      }
+      done[row] = true;
+      if (wantCard) cardCells.push(colCard + row); else chkCells.push(colChk + row);
+      clearCells.push(colChk + row, colCard + row);
+    });
+
+    // まとめて書く（1セルずつ setValue すると件数分の通信になる）
+    if (chkCells.length)  rec.getRangeList(chkCells).setValue(true);
+    if (cardCells.length) rec.getRangeList(cardCells).setValue(true);
+    // 「未チェック伝票の確認」の水色の印は用済みなので消す（1件ずつ保存したときと同じ）
+    if (clearCells.length) {
+      try { rec.getRangeList(clearCells).setBackground(null); } catch (eBg) { /* 色は目印。失敗しても保存は成立させる */ }
+    }
+    SpreadsheetApp.flush();
+    t.lap("書き込み");
+
+    return {
+      result: "success",
+      checked: chkCells.length,
+      card: cardCells.length,
+      skipped: skipped,
       ms: t.total(), laps: t.marks()
     };
   } catch (e) {
