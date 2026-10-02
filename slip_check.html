@@ -216,7 +216,9 @@
 //   日付でまとめてタブ … 会計日を選ぶと、その日の伝票を一覧にする。未チェックの伝票は
 //                       確認済みを付けた状態で並ぶので、技術料を見たい伝票だけ外して
 //                       確定する（2026-10）。自由入力を使った伝票は最初から外してある。
-//                       カード決済の伝票は行ごとにカード決済を付ける（確認済みは自動で外れる）
+//                       カード決済の伝票は行ごとにカード決済を付ける（確認済みは自動で外れる）。
+//                       送料・直送料を含む伝票と「しっぽの会」の伝票は必ずカード決済なので、
+//                       最初からカード決済を付けて並べる
 //
 // 技術料台帳は触らない。月末の「技術料台帳の整合チェック」が販売記録を正として
 // 値ごと直すので、ここで先回りして書く必要がない。
@@ -301,7 +303,8 @@ function switchMode(next) {
 function paintHint() {
   if (mode === MODE_DAY) {
     elHint.innerHTML = '未チェックの伝票には確認済みが付いた状態で並びます。<br>' +
-      '技術料を確認したい伝票だけ外して <b>確定</b>。カード決済の伝票は「カード」に付けてください';
+      '技術料を確認したい伝票だけ外して <b>確定</b>。カード決済の伝票は「カード」に付けてください<br>' +
+      '送料・しっぽの会の伝票は最初から「カード」に付いています';
     return;
   }
   elHint.innerHTML = (mode === MODE_REC)
@@ -624,9 +627,13 @@ function onDay(res) {
   var keep = lastDayMessage; lastDayMessage = null;
   dayRows = res.rows.map(function (r) {
     var done = r.checked || r.card;
-    // 初期値：未チェックは確認済みを付ける。ただし自由入力を使った伝票は
-    // 技術料の追記が要るかもしれないので外しておく。
-    r.ui = { chk: !done && !r.freeInput, card: false };
+    // 初期値：未チェックは確認済みを付ける。
+    //   ・送料（直送料を含む）が入った伝票・「しっぽの会」の伝票は必ずカード決済なので、
+    //     確認済みではなくカード決済を付ける
+    //   ・自由入力を使った伝票は技術料の追記が要るかもしれないので、どちらも付けない
+    //     （カード決済の伝票でも、月次集計でカード決済台帳に写る前に技術料を直す必要があるため）
+    var mustCard = r.shipping || r.corporate;
+    r.ui = { chk: !done && !r.freeInput && !mustCard, card: !done && !r.freeInput && mustCard };
     r.done = done;
     return r;
   });
@@ -658,7 +665,9 @@ function renderDay() {
   }
   var trs = rows.map(function (r, i) {
     var name = esc(r.owner) + (r.pet ? '<span class="muted">・' + esc(r.pet) + '</span>' : '');
-    var badge = r.freeInput ? '<span class="badge badge-free">自由入力</span>' : '';
+    var badge = (r.freeInput ? '<span class="badge badge-free">自由入力</span>' : '') +
+                (r.shipping  ? '<span class="badge badge-card">送料</span>' : '') +
+                (r.corporate ? '<span class="badge badge-card">しっぽの会</span>' : '');
     if (r.done) {
       return '<tr class="done">' +
         '<td class="ck">' + (r.checked ? '✓' : '') + '</td>' +

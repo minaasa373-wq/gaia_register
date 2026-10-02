@@ -76,6 +76,13 @@ const SHEET_VACCINE_LEDGER = "ワクチン台帳";      // 案3b：ワクチン�
 // 「しっぽの会」「しっぽ」「しっぽの会預かり」のような表記ゆれをまとめて拾うため、
 // 完全一致ではなく部分一致で判定する。
 const OWNER_REPORT_KEYWORD = "しっぽ";
+
+// 「しっぽの会」の伝票か（飼い主名に OWNER_REPORT_KEYWORD を含む）。
+// 実データには「しっぽの会」「しっぽ」「しっぽの会預かり」などの表記ゆれがあるため部分一致。
+// しっぽの会 明細の出力と、日付でまとめて確認（法人なので必ずカード決済）の両方で使う。
+function isOwnerReportOwner_(owner) {
+  return String(owner == null ? "" : owner).indexOf(OWNER_REPORT_KEYWORD) !== -1;
+}
 const OWNER_REPORT_LABEL   = "しっぽの会";
 
 // 未チェック伝票のダイアログに並べる最大件数（超えた分は「ほか◯件」とまとめる）
@@ -2010,7 +2017,7 @@ function generateOwnerReport(year, month) {
     const d = parseVisitDate(r[C["会計日"]]);
     if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
     const owner = String(r[C["飼い主名"]] || "").trim();
-    if (owner.indexOf(OWNER_REPORT_KEYWORD) === -1) return;
+    if (!isOwnerReportOwner_(owner)) return;
 
     slips.push({
       date:  formatVisitDate(d),
@@ -3007,6 +3014,10 @@ function saveCardSettled_(ss, payload, dryRun) {
 // 確認済みを付けた状態で並べ、技術料を見たい伝票だけ外して確定してもらう。
 // 番号を1件ずつ打つより速く、打ち間違いも起きない。
 //
+// 必ずカード決済になる伝票（2026-10 旭さん確認）は、画面で最初からカード決済を付けて並べる：
+//   ・明細に「送料」を含む（送料・直送料。通販の発送分）
+//   ・飼い主が「しっぽの会」（法人）
+// ここでは印（shipping / corporate）を付けて返すだけで、決めるのは画面。
 // 書くのは販売記録の「確認済み」「カード決済」だけ（どちらも ON にするだけで、外すことはしない）。
 // 精算済はここでは扱わない。入金の時期は会計日と関係がないため。
 const UI_DAY_MAX_ROWS = 300;   // 1日の会計がこれを超えることは無い（実データの最大は82件）
@@ -3085,7 +3096,9 @@ function uiListDay(dateStr) {
           gigi:      (Number(get("通常技術料")) || 0) + (Number(get("ワクチン技術料")) || 0),
           checked:   isChecked(get("確認済み")),
           card:      isChecked(get("カード決済")),
-          freeInput: !!(bgs && String(bgs[k][0] || "").toLowerCase() === FREE_INPUT_COLOR)
+          freeInput: !!(bgs && String(bgs[k][0] || "").toLowerCase() === FREE_INPUT_COLOR),
+          shipping:  String(get("明細") || "").indexOf("送料") !== -1,   // 「直送料」も含む
+          corporate: isOwnerReportOwner_(get("飼い主名"))
         });
       }
     });
