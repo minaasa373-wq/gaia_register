@@ -806,9 +806,12 @@ function hasStay(p) {
 // 例）"gigi:same guide:500円から" → "500円から"
 //     "gigi:same guide:5000～10000円" → "5000～10000円"
 // guide: 以降は行末（または改行）までを自由文字列として扱う。
+// ただし guide: の後ろに別の印（gigi:fixed など）が続いていたら、そこで切る
+// （「guide:4000から gigi:fixed」と書いても目安に「gigi:fixed」が混ざらないように）。
 function getPriceGuide(p) {
   const m = (p.memo || "").match(/guide:([^\r\n]*)/);
-  return m ? m[1].trim() : "";
+  if (!m) return "";
+  return m[1].replace(/\s+(?:gigi|formula|stay|prefix|default|guide):.*$/, "").trim();
 }
 
 // ===== 返品モード =====
@@ -1937,7 +1940,10 @@ function applyEdit() {
     delete item.stayNights;
   }
   // gigi:same 品目：単価変更時に技術料も同額に追従
-  if (item.isGigiSame && !item.isReturn) {
+  // ただし gigi:fixed も付いた品目（例：トリミング「gigi:same gigi:fixed」＝金額は毎回入力、
+  // 技術料は技術料列の値で固定）は追従させない。ここだけ gigi:fixed を見ていなかったため、
+  // カートで単価を直した瞬間に技術料が単価と同額に戻っていた（2026-10）。
+  if (item.isGigiSame && !item.isReturn && !item.isGigiFixed) {
     item.gigi = priceInput;
     item.masterPrice = priceInput;
   }
