@@ -3410,6 +3410,124 @@ function uiSaveDay(payload) {
   }
 }
 
+// ===== ダイアログ：精算済まとめて（2026-10） =====
+// カード会社の入金明細を見ながら、伝票番号を打っては Enter を押していき、
+// 最後にまとめて「精算済」を付ける画面のためのサーバ処理。
+//
+// 1件ごとに問い合わせると毎回1秒ほど待たされ、打つ速さに追いつかない。
+// そこでタブを開いたときにカード決済台帳を一度だけ読み、画面側で引く。
+// 書き込みは最後の保存の1回だけ。書く直前に伝票番号で行を確かめ直す。
+// 精算済を外すことはしない（ONにするだけ）。
+const UI_SETTLE_MAX = 500;   // 一度に保存できる件数
+
+function uiLoadCardLedger() {
+  UI_COLMAP_CACHE = {};
+  const t = uiTimer_();
+  try {
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(SHEET_CARD_LEDGER);
+    if (!sheet || sheet.getLastRow() < 2) return { result: "success", rows: [], ms: t.total(), laps: t.marks() };
+    const cm = colMap_(sheet);
+    const C = cm.idx;
+    const need = ["伝票番号", "精算済"];
+    const missing = need.filter(function (n) { return !(n in C); });
+    if (missing.length) return { result: "error", message: "カード決済台帳に次の列がありません：" + missing.join("、") };
+
+    const vals = sheet.getRange(2, 1, sheet.getLastRow() - 1, cm.count).getValues();
+    t.lap("読み込み");
+    const get = function (r, name) { return (name in C) ? r[C[name]] : ""; };
+    // 画面へは配列で渡す（項目名を1,000回以上繰り返さないため）
+    // [行番号, 照合キー, 伝票番号, 会計日, 飼い主名, ペット名, 担当者, 技術料, 合計, 精算済, 集計済み]
+    const rows = [];
+    vals.forEach(function (r, i) {
+      const raw = get(r, "伝票番号");
+      const key = normInvoice(raw);
+      if (!key) return;
+      rows.push([
+        i + 2, key, String(raw == null ? "" : raw).trim(),
+        uiFmtDate_(get(r, "会計日")),
+        String(get(r, "飼い主名") || ""), String(get(r, "ペット名") || ""), String(get(r, "担当者") || ""),
+        (Number(get(r, "通常技術料")) || 0) + (Number(get(r, "ワクチン技術料")) || 0),
+        Number(get(r, "合計")) || 0,
+        isChecked(get(r, "精算済")),
+        ("集計済み" in C) ? uiAggTag_(get(r, "集計済み")) : ""
+      ]);
+    });
+    t.lap("組み立て");
+    return { result: "success", rows: rows, ms: t.total(), laps: t.marks() };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  }
+}
+
+// payload: { items: [{ invoiceNo, sheetRow }] }  精算済を付けたい行だけが来る
+function uiSaveSettledBatch(payload) {
+  UI_COLMAP_CACHE = {};
+  const lock = LockService.getScriptLock();
+  if (!lock.tryLock(20000)) {
+    return { result: "error", message: "他の処理が実行中です。少し待ってからもう一度お試しください。" };
+  }
+  const t = uiTimer_();
+  try {
+    const items = (payload && Array.isArray(payload.items)) ? payload.items : [];
+    if (!items.length) return { result: "error", message: "保存する伝票がありません" };
+    if (items.length > UI_SETTLE_MAX) return { result: "error", message: "一度に保存できるのは " + UI_SETTLE_MAX + " 件までです" };
+
+    const ss = SpreadsheetApp.getActiveSpreadsheet();
+    const sheet = ss.getSheetByName(SHEET_CARD_LEDGER);
+    if (!sheet || sheet.getLastRow() < 2) return { result: "error", message: "カード決済台帳が見つかりません" };
+    const cm = colMap_(sheet);
+    const C = cm.idx;
+    if (!("伝票番号" in C) || !("精算済" in C)) {
+      return { result: "error", message: "カード決済台帳に「伝票番号」「精算済」の列がありません" };
+    }
+
+    // 照合に使う2列を1回ずつ読む
+    const last = sheet.getLastRow();
+    const invs = sheet.getRange(2, C["伝票番号"] + 1, last - 1, 1).getValues();
+    const sets = sheet.getRange(2, C["精算済"] + 1, last - 1, 1).getValues();
+    const byNo = {};
+    invs.forEach(function (r, i) {
+      const k = normInvoice(r[0]);
+      if (k) (byNo[k] = byNo[k] || []).push(i + 2);
+    });
+    t.lap("照合");
+
+    const col = columnToLetter(C["精算済"] + 1);
+    const cells = [], saved = [], skipped = [], done = {};
+    items.forEach(function (it) {
+      const no  = String(it && it.invoiceNo != null ? it.invoiceNo : "").trim();
+      const key = normInvoice(no);
+      if (!key) { skipped.push({ invoiceNo: no, reason: "伝票番号がありません" }); return; }
+      // 画面を開いている間に行がずれていないか、行番号の伝票を確かめる。ずれていたら番号で探し直す
+      let row = Number(it.sheetRow) || 0;
+      if (!(row >= 2 && row <= last && normInvoice(invs[row - 2][0]) === key)) {
+        const cand = byNo[key] || [];
+        if (cand.length !== 1) {
+          skipped.push({ invoiceNo: no, reason: cand.length ? "同じ番号が" + cand.length + "行あります" : "台帳にありません" });
+          return;
+        }
+        row = cand[0];
+      }
+      if (done[row]) return;
+      if (isChecked(sets[row - 2][0])) { skipped.push({ invoiceNo: no, reason: "すでに精算済" }); return; }
+      done[row] = true;
+      cells.push(col + row);
+      saved.push(no);
+    });
+
+    // まとめて書く（1セルずつ setValue すると件数分の通信になる）
+    if (cells.length) sheet.getRangeList(cells).setValue(true);
+    SpreadsheetApp.flush();
+    t.lap("書き込み");
+    return { result: "success", saved: saved, skipped: skipped, ms: t.total(), laps: t.marks() };
+  } catch (e) {
+    return { result: "error", message: e.message };
+  } finally {
+    lock.releaseLock();
+  }
+}
+
 // ===== ユーティリティ =====
 // 会計日（文字列 or Date）をDateに変換
 function parseVisitDate(val) {

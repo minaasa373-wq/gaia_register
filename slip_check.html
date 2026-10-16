@@ -155,6 +155,32 @@
   .day-sum { font-size: 13px; }
   .day-sum b { font-size: 15px; }
 
+  /* ---- 精算済まとめて ---- */
+  #settleCtl { display: none; align-items: center; gap: 10px; }
+  #settleInv {
+    width: 150px; padding: 8px 10px; font-size: 20px; font-weight: bold;
+    text-align: center; border: 2px solid #fff; border-radius: 6px;
+    font-family: "SF Mono", Consolas, monospace;
+  }
+  table.settle { width: 100%; border-collapse: collapse; background: #fff; }
+  table.settle th {
+    position: sticky; top: 0; background: #eef2ee; font-size: 11px; color: #555;
+    text-align: left; padding: 6px 6px; border-bottom: 1px solid var(--line); z-index: 1;
+  }
+  table.settle td { padding: 6px 6px; border-bottom: 1px solid #eee; vertical-align: middle; }
+  table.settle td.r, table.settle th.r { text-align: right; }
+  table.settle td.ck, table.settle th.ck { width: 56px; text-align: center; }
+  table.settle td.no { width: 32px; color: #9aa09a; text-align: right; font-size: 11px; }
+  table.settle input[type=checkbox] { width: 20px; height: 20px; cursor: pointer; }
+  table.settle .inv { font-family: "SF Mono", Consolas, monospace; font-weight: bold; }
+  table.settle tr.off td { background: #fffbf0; }
+  table.settle tr.settled td { color: #9aa09a; background: #f7f7f5; }
+  table.settle tr.missing td { color: var(--red); background: #fff5f5; }
+  table.settle tr.flash td { animation: flash 1.2s ease-out; }
+  @keyframes flash { 0% { background: #ffe082; } 100% { background: inherit; } }
+  .btn-x { border: 0; background: transparent; color: #9aa09a; font-size: 16px; cursor: pointer; padding: 0 4px; }
+  .btn-x:hover { color: var(--red); }
+
   /* ---- 下段 ---- */
   .foot {
     display: flex; align-items: center; gap: 10px;
@@ -173,6 +199,7 @@
   <button class="tab on" id="tabRec">販売記録</button>
   <button class="tab" id="tabCard">カード決済台帳</button>
   <button class="tab" id="tabDay">日付でまとめて</button>
+  <button class="tab" id="tabSettle">精算済まとめて</button>
 </div>
 
 <div class="bar">
@@ -180,6 +207,10 @@
     <label for="invoice">伝票番号</label>
     <input id="invoice" type="text" inputmode="numeric" autocomplete="off">
     <button class="btn" id="btnLookup">表示</button>
+  </span>
+  <span id="settleCtl">
+    <label for="settleInv">伝票番号</label>
+    <input id="settleInv" type="text" inputmode="numeric" autocomplete="off">
   </span>
   <span id="dayCtl">
     <label for="dayDate">会計日</label>
@@ -220,6 +251,11 @@
 //                         並んでいないため、どれを確かめ終えたか分からなくなると現場から
 //                         指摘があり、何も付けない状態に変えた）
 //                       カード決済の伝票は行ごとにカード決済を付ける（確認済みは自動で外れる）。
+//   精算済まとめてタブ … カード会社の入金明細を見ながら伝票番号を打っては Enter を押し、
+//                       打った順に並んだ一覧を見て最後にまとめて保存する（2026-10）。
+//                       タブを開いたときにカード決済台帳を一度だけ読み、番号は画面の中で引く
+//                       （1件ずつ問い合わせると毎回待たされるため）。入力は下書きとして
+//                       このPCのブラウザに残し、保存したら消す。
 //                       送料・直送料を含む伝票と「しっぽの会」の伝票は必ずカード決済なので、
 //                       最初からカード決済を付けて並べる
 //
@@ -232,6 +268,11 @@
 var MODE_REC  = "rec";
 var MODE_CARD = "card";
 var MODE_DAY  = "day";
+var MODE_SETTLE = "settle";
+
+var ledgerIdx = null;     // 精算済まとめて：伝票番号の照合キー → 台帳の行（配列）。同じ番号が複数あれば配列が複数
+var settleRows = [];      // 精算済まとめて：打った順の一覧
+var SETTLE_DRAFT_KEY = "gaia_settle_draft_v1";
 var mode = MODE_REC;
 
 var dayRows = null;    // 日付でまとめて：サーバから受け取った一覧（ui.chk / ui.card を足して持つ）
@@ -272,6 +313,12 @@ function setBusy(on) {
     elDelete.disabled = true;
     return;
   }
+  if (mode === MODE_SETTLE) {
+    elSave.disabled = on || settleCount() === 0;
+    elDelete.disabled = true;
+    document.getElementById("settleInv").disabled = on;
+    return;
+  }
   elSave.disabled   = on || !slip;
   elDelete.disabled = on || !slip || mode !== MODE_REC;
 }
@@ -283,10 +330,19 @@ function switchMode(next) {
   document.getElementById("tabRec").className  = "tab" + (mode === MODE_REC  ? " on" : "");
   document.getElementById("tabCard").className = "tab" + (mode === MODE_CARD ? " on" : "");
   document.getElementById("tabDay").className  = "tab" + (mode === MODE_DAY  ? " on" : "");
+  document.getElementById("tabSettle").className = "tab" + (mode === MODE_SETTLE ? " on" : "");
   elDelete.style.display = (mode === MODE_REC) ? "" : "none";
-  document.getElementById("invCtl").style.display = (mode === MODE_DAY) ? "none" : "flex";
-  document.getElementById("dayCtl").style.display = (mode === MODE_DAY) ? "flex" : "none";
+  document.getElementById("invCtl").style.display    = (mode === MODE_REC || mode === MODE_CARD) ? "flex" : "none";
+  document.getElementById("dayCtl").style.display    = (mode === MODE_DAY) ? "flex" : "none";
+  document.getElementById("settleCtl").style.display = (mode === MODE_SETTLE) ? "flex" : "none";
   paintHint();
+  if (mode === MODE_SETTLE) {
+    slip = null;
+    setStatus("");
+    elTiming.textContent = "";
+    loadLedgerForSettle();
+    return;
+  }
   if (mode === MODE_DAY) {
     slip = null;
     setStatus("");
@@ -304,6 +360,11 @@ function switchMode(next) {
 }
 
 function paintHint() {
+  if (mode === MODE_SETTLE) {
+    elHint.innerHTML = '入金明細の伝票番号を打って <b>Enter</b>。打った順に並びます（最初から精算済にチェック）<br>' +
+      '番号欄が空のときの <b>Backspace</b> で最後の行を取り消し ／ 最後に <b>保存</b> でまとめてカード決済台帳に反映';
+    return;
+  }
   if (mode === MODE_DAY) {
     elHint.innerHTML = '手元の伝票を見ながら「確認済み」か「カード」を付けて <b>確定</b>（行を押すと確認済み）<br>' +
       '送料・しっぽの会の伝票は最初から「カード」に付いています。黄色はまだ何も付いていない伝票です';
@@ -319,7 +380,7 @@ function paintHint() {
 function backToInput() {
   slip = null;
   setBusy(false);
-  if (mode === MODE_DAY) return;
+  if (mode === MODE_DAY || mode === MODE_SETTLE) return;
   elInv.value = "";
   elInv.focus();
 }
@@ -371,7 +432,7 @@ function onFail(e) {
 
 // ---- 描画 ----
 function render(v) {
-  if (mode === MODE_DAY) return;   // 日付でまとめては renderDay が描く
+  if (mode === MODE_DAY || mode === MODE_SETTLE) return;   // それぞれ renderDay / renderSettle が描く
   if (!v) {
     elBody.innerHTML =
       '<div class="placeholder"><div class="big">' +
@@ -769,8 +830,221 @@ function saveDay() {
 }
 var lastDayMessage = null;   // 確定後に一覧を読み直しても、結果の文言を消さないため
 
+// ---- 精算済まとめて ----
+// 伝票番号の照合キー（先頭ゼロ・全角数字・空白の違いを吸収。サーバの normInvoice と同じ考え方）
+function invKey(v) {
+  var s = String(v == null ? "" : v).normalize("NFKC").replace(/\s+/g, "");
+  if (!s) return "";
+  return /^\d+$/.test(s) ? (s.replace(/^0+/, "") || "0") : s;
+}
+
+function loadLedgerForSettle() {
+  if (busy) return;
+  ledgerIdx = null;
+  setBusy(true);
+  setStatus("カード決済台帳を読み込んでいます…");
+  if (!settleRows.length) elBody.innerHTML = '<div class="placeholder">読み込み中…</div>';
+  google.script.run.withSuccessHandler(onLedgerLoaded).withFailureHandler(onFail).uiLoadCardLedger();
+}
+
+function onLedgerLoaded(res) {
+  showTiming(res);
+  setBusy(false);
+  if (!res || res.result !== "success") {
+    setStatus((res && res.message) || "カード決済台帳を読み込めませんでした", "err");
+    return;
+  }
+  ledgerIdx = {};
+  res.rows.forEach(function (a) {
+    var rec = { sheetRow: a[0], key: a[1], invoiceNo: a[2], visitDate: a[3], owner: a[4], pet: a[5],
+                staff: a[6], gigi: a[7], total: a[8], settled: a[9] === true, aggregated: a[10] };
+    (ledgerIdx[rec.key] = ledgerIdx[rec.key] || []).push(rec);
+  });
+  // 読み直したので、一覧の各行も今の台帳で引き直す（他の端末で精算済にされた等を映す）
+  var drafts = settleRows.length ? settleRows.map(function (r) { return { raw: r.raw, on: r.on }; }) : null;
+  if (!drafts) {
+    var saved = readSettleDraft();
+    if (saved && saved.length &&
+        window.confirm("前回の入力が " + saved.length + " 件残っています。続きから再開しますか？\n\n" +
+                       "［キャンセル］を押すと、残っていた入力は消えます。")) {
+      drafts = saved;
+    } else if (saved) {
+      clearSettleDraft();
+    }
+  }
+  settleRows = [];
+  (drafts || []).forEach(function (d) { settleRows.push(makeSettleRow(d.raw, d.on)); });
+  renderSettle();
+  setStatus("台帳 " + res.rows.length + " 行を読み込みました。伝票番号を打って Enter を押してください", "ok");
+  var el = document.getElementById("settleInv");
+  el.value = "";
+  el.focus();
+}
+
+function makeSettleRow(raw, on) {
+  var key = invKey(raw);
+  var hits = (ledgerIdx && ledgerIdx[key]) || [];
+  var row = { raw: String(raw), key: key, rec: hits.length === 1 ? hits[0] : null, on: false };
+  if (hits.length === 0)      row.state = "missing";
+  else if (hits.length > 1)   row.state = "multiple";
+  else if (hits[0].settled)   row.state = "settled";
+  else                        { row.state = "ok"; row.on = (on !== false); }
+  return row;
+}
+
+function settleCount() {
+  return settleRows.filter(function (r) { return r.state === "ok" && r.on; }).length;
+}
+
+function addSettle() {
+  var el = document.getElementById("settleInv");
+  var raw = el.value.trim();
+  if (!raw || busy) return;
+  if (!ledgerIdx) { setStatus("カード決済台帳を読み込み中です。少し待ってください", "err"); return; }
+  var key = invKey(raw);
+  // 同じ番号を2回打ったら行を増やさず、前の行を光らせる
+  for (var i = 0; i < settleRows.length; i++) {
+    if (settleRows[i].key === key) {
+      el.value = "";
+      flashSettleRow(i);
+      setStatus("伝票 " + raw + " はすでに " + (i + 1) + " 行目に入力しています", "err");
+      return;
+    }
+  }
+  var row = makeSettleRow(raw, true);
+  settleRows.push(row);
+  el.value = "";
+  renderSettle();
+  writeSettleDraft();
+  var msg = { ok: "", settled: "伝票 " + raw + " はすでに精算済です",
+              missing: "伝票 " + raw + " はカード決済台帳にありません（現金の会計か、まだ月次集計で転記されていないか、打ち間違い）",
+              multiple: "伝票 " + raw + " はカード決済台帳に複数行あります。カード決済台帳タブで行を選んでください" }[row.state];
+  if (msg) setStatus(msg, "err"); else setStatus("");
+}
+
+function removeSettle(i) {
+  if (busy || i < 0 || i >= settleRows.length) return;
+  settleRows.splice(i, 1);
+  renderSettle();
+  writeSettleDraft();
+}
+
+function renderSettle() {
+  if (mode !== MODE_SETTLE) return;
+  if (!settleRows.length) {
+    elBody.innerHTML = '<div class="placeholder"><div class="big">カード会社の入金明細の伝票番号を、上の欄に打って Enter を押してください。</div>' +
+      '<div>打った順に下へ並びます。最後に「保存」でまとめてカード決済台帳の精算済に反映します。</div></div>';
+    paintSettleSum();
+    return;
+  }
+  var trs = settleRows.map(function (r, i) {
+    var v = r.rec || {};
+    var note = "", cls = "";
+    if (r.state === "missing")       { cls = "missing"; note = "⚠ 台帳にありません"; }
+    else if (r.state === "multiple") { cls = "missing"; note = "⚠ 台帳に複数行あります"; }
+    else if (r.state === "settled")  { cls = "settled"; note = "すでに精算済" + (v.aggregated ? '　<span class="badge badge-free">' + esc(v.aggregated) + ' 給与反映済み</span>' : ""); }
+    else if (!r.on)                  { cls = "off"; note = "保存しない"; }
+    var ck = (r.state === "ok")
+      ? '<input type="checkbox" data-i="' + i + '"' + (r.on ? " checked" : "") + '>'
+      : (r.state === "settled" ? "✓" : "—");
+    return '<tr class="' + cls + '" data-i="' + i + '">' +
+      '<td class="no">' + (i + 1) + '</td>' +
+      '<td class="ck">' + ck + '</td>' +
+      '<td class="inv">' + esc(r.rec ? v.invoiceNo : r.raw) + '</td>' +
+      '<td>' + esc(v.owner || "") + '</td><td>' + esc(v.pet || "") + '</td><td>' + esc(v.staff || "") + '</td>' +
+      '<td class="r">' + (r.rec ? yen(v.gigi) : "") + '</td><td class="r">' + (r.rec ? yen(v.total) : "") + '</td>' +
+      '<td>' + note + '</td>' +
+      '<td><button class="btn-x" data-x="' + i + '" title="この行を消す">×</button></td></tr>';
+  }).join("");
+  elBody.innerHTML =
+    '<table class="settle"><thead><tr><th class="no"></th><th class="ck">精算済</th><th>伝票</th><th>飼い主</th><th>ペット</th>' +
+    '<th>担当者</th><th class="r">技術料</th><th class="r">合計</th><th></th><th></th></tr></thead><tbody>' + trs + '</tbody></table>';
+  Array.prototype.forEach.call(elBody.querySelectorAll('table.settle input[type=checkbox]'), function (cb) {
+    cb.addEventListener("change", function () {
+      var r = settleRows[Number(cb.getAttribute("data-i"))];
+      r.on = cb.checked;
+      renderSettle();
+      writeSettleDraft();
+      document.getElementById("settleInv").focus();   // すぐ次の番号を打てるように
+    });
+  });
+  Array.prototype.forEach.call(elBody.querySelectorAll('button.btn-x'), function (b) {
+    b.addEventListener("click", function () {
+      removeSettle(Number(b.getAttribute("data-x")));
+      document.getElementById("settleInv").focus();
+    });
+  });
+  elBody.scrollTop = elBody.scrollHeight;   // 最後に打った行が見えるように
+  paintSettleSum();
+}
+
+function flashSettleRow(i) {
+  var tr = elBody.querySelector('table.settle tr[data-i="' + i + '"]');
+  if (!tr) return;
+  tr.classList.remove("flash"); void tr.offsetWidth; tr.classList.add("flash");
+  tr.scrollIntoView({ block: "nearest" });
+}
+
+function paintSettleSum() {
+  var n = settleCount();
+  elSave.textContent = n ? "保存（" + n + "件）" : "保存";
+  elSave.disabled = busy || n === 0;
+}
+
+function saveSettle() {
+  if (busy) return;
+  var items = settleRows.filter(function (r) { return r.state === "ok" && r.on; })
+                        .map(function (r) { return { invoiceNo: r.rec.invoiceNo, sheetRow: r.rec.sheetRow }; });
+  if (!items.length) return;
+  var others = settleRows.length - items.length;
+  if (!window.confirm(items.length + " 件の伝票に、カード決済台帳の精算済を付けます。" +
+                      (others ? "\n（一覧のほか " + others + " 件は保存しません）" : "") + "\n\nよろしいですか？")) return;
+  setBusy(true);
+  setStatus("保存しています…");
+  google.script.run
+    .withSuccessHandler(function (res) {
+      setBusy(false);
+      showTiming(res);
+      if (!res || res.result !== "success") {
+        setStatus((res && res.message) || "保存に失敗しました", "err");
+        return;
+      }
+      var sk = res.skipped || [];
+      var msg = res.saved.length + " 件を精算済にしました";
+      if (sk.length) msg += "　⚠ 保存しなかった伝票：" + sk.map(function (x) { return x.invoiceNo + "（" + x.reason + "）"; }).join("、");
+      // 保存できたので一覧と下書きを空にし、台帳を読み直して次の入力に備える
+      settleRows = [];
+      clearSettleDraft();
+      renderSettle();
+      setStatus(msg, sk.length ? "err" : "ok");
+      var keep = { text: elStatus.textContent, kind: elStatus.className };
+      ledgerIdx = null;
+      setBusy(true);
+      google.script.run
+        .withSuccessHandler(function (r2) { onLedgerLoaded(r2); elStatus.textContent = keep.text; elStatus.className = keep.kind; })
+        .withFailureHandler(onFail)
+        .uiLoadCardLedger();
+    })
+    .withFailureHandler(onFail)
+    .uiSaveSettledBatch({ items: items });
+}
+
+// 下書き：このPCのブラウザに残す（保存したら消す）。使えない環境では黙って何もしない
+function writeSettleDraft() {
+  try {
+    if (!settleRows.length) { localStorage.removeItem(SETTLE_DRAFT_KEY); return; }
+    localStorage.setItem(SETTLE_DRAFT_KEY, JSON.stringify(settleRows.map(function (r) { return { raw: r.raw, on: r.on }; })));
+  } catch (e) {}
+}
+function readSettleDraft() {
+  try { var v = JSON.parse(localStorage.getItem(SETTLE_DRAFT_KEY) || "null"); return Array.isArray(v) ? v : null; }
+  catch (e) { return null; }
+}
+function clearSettleDraft() { try { localStorage.removeItem(SETTLE_DRAFT_KEY); } catch (e) {} }
+
 // ---- 保存 ----
 function save(confirmed) {
+  if (mode === MODE_SETTLE) { saveSettle(); return; }
   if (mode === MODE_DAY) { saveDay(); return; }
   if (busy || !slip) return;
   setBusy(true);
@@ -903,6 +1177,16 @@ document.getElementById("btnLookup").addEventListener("click", lookup);
 document.getElementById("tabRec").addEventListener("click", function () { switchMode(MODE_REC); });
 document.getElementById("tabCard").addEventListener("click", function () { switchMode(MODE_CARD); });
 document.getElementById("tabDay").addEventListener("click", function () { switchMode(MODE_DAY); });
+document.getElementById("tabSettle").addEventListener("click", function () { switchMode(MODE_SETTLE); });
+document.getElementById("settleInv").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { e.preventDefault(); addSettle(); return; }
+  // 番号欄が空のときの Backspace は、最後に足した行の取り消し
+  if (e.key === "Backspace" && this.value === "" && settleRows.length) {
+    e.preventDefault();
+    removeSettle(settleRows.length - 1);
+    setStatus("最後の行を取り消しました");
+  }
+});
 document.getElementById("btnPrevDay").addEventListener("click", function () { shiftDay(-1); });
 document.getElementById("btnNextDay").addEventListener("click", function () { shiftDay(1); });
 document.getElementById("btnDayLoad").addEventListener("click", loadDay);
@@ -914,6 +1198,7 @@ elDelete.addEventListener("click", askDelete);
 
 document.addEventListener("keydown", function (e) {
   if (mode === MODE_DAY) return;   // 日付でまとめてはマウス・タップで操作する（Enterで誤って確定しないように）
+  if (mode === MODE_SETTLE) return; // 精算済まとめては番号欄が Enter を受ける。保存はボタンだけ（誤って保存しないように）
   if (e.key === "Escape") {
     e.preventDefault();
     if (deleting) { closeDeletePanel(); return; }
