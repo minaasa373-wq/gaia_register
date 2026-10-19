@@ -1114,7 +1114,10 @@ function openDoseModalByGroup(modalGroup) {
   if (doseGroup.length === 0) return;
 
   document.getElementById("doseProductName").textContent = modalGroup;
-  state.currentDose = doseGroup[0];
+  // 最初に選んでおく区分：メモ欄に default:on がある品目（複数選択モーダルと同じ印）。
+  // 無ければ従来どおり先頭（表示順のいちばん上）。
+  // 例）皮下・筋注は表示順の先頭が「仔犬・仔猫」だが、よく使う「〜10kg」に default:on を付けて初期選択にする。
+  state.currentDose = doseGroup.find(isDefaultOn) || doseGroup[0];
 
   const opts = doseGroup.map(p => `
     <div class="dose-opt${p === state.currentDose ? " selected" : ""}" data-id="${p.id}" onclick="selectDose(${p.id})">
@@ -1693,6 +1696,20 @@ function closeDrugQtyModal() {
 }
 
 // ===== 粉薬モーダル =====
+// 入力欄での Enter：
+//   分包数 → 1包あたり単価の欄へ移る（iPadはキーボードが出ると画面が狭く、単価の欄が見えなくなるため）
+//   単価   → キーボードを閉じる（合計金額と「注文に追加」が見えるように。勝手に追加はしない）
+function powderKeydown(e, field) {
+  if (e.key !== "Enter") return;
+  e.preventDefault();
+  if (field === "packs") {
+    const next = document.getElementById("powderUnitPrice");
+    next.focus();
+    try { next.scrollIntoView({ block: "center", behavior: "smooth" }); } catch (err) {}
+  } else {
+    e.target.blur();
+  }
+}
 function openPowderModal() {
   document.getElementById("powderPacks").value = "";
   document.getElementById("powderUnitPrice").value = "";
