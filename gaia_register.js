@@ -667,6 +667,9 @@ function resetStaffArea() {
 }
 
 // ===== 商品グリッドの表示 =====
+// 直前に描いた中身。同じなら描き直さない（下の説明を参照）
+let lastProductGridHtml = null;
+
 function renderProducts() {
   const grid = document.getElementById("productGrid");
 
@@ -695,11 +698,11 @@ function renderProducts() {
   });
 
   if (groups.size === 0) {
-    grid.innerHTML = `<div class="empty-products">該当する商品がありません</div>`;
+    setProductGridHtml(grid, `<div class="empty-products">該当する商品がありません</div>`);
     return;
   }
 
-  grid.innerHTML = Array.from(groups.values())
+  const gridHtml = Array.from(groups.values())
     .sort((a, b) => {
       // 第一キー：group（診療を先、薬・物販を後）
       const ga = a[0].group === "診療" ? 0 : 1;
@@ -763,6 +766,22 @@ function renderProducts() {
         <div class="tile-price">${yenDisp(p.price)}${unitSuffix(p.unit)}</div>
       </div>`;
     }).join("");
+  setProductGridHtml(grid, gridHtml);
+}
+
+// 商品一覧の中身を差し替える。中身が前回と同じなら DOM に触らない。
+//
+// 【2026-10 iPadで検索結果のタイルが1回のタップで選べない不具合への対策】
+// 検索欄に日本語（例「ぷれ」）を打って、確定する前の状態のままタイルをタップすると、
+// iPad はタップした瞬間に入力中の文字を確定させ、そのとき input イベントがもう一度起きる。
+// 以前はそのたびに一覧を丸ごと作り直していたので、指が触れたタイルが指を離す前に
+// 別の要素に置き換わり、タップがなかったことになっていた（2回・3回押さないと選べない）。
+// 確定しても検索結果は変わらないので、同じ中身なら作り直さないことで、触れたタイルを残す。
+// 確定のイベントが出るかどうかは iPad の設定や iPadOS のバージョンで違うため、端末によって差が出ていた。
+function setProductGridHtml(grid, html) {
+  if (html === lastProductGridHtml && grid.childElementCount > 0) return;
+  grid.innerHTML = html;
+  lastProductGridHtml = html;
 }
 
 // 担当者選択フラグ判定

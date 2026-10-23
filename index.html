@@ -46,7 +46,11 @@ button { cursor: pointer; border: none; background: none; }
 .app {
   display: flex;
   flex-direction: column;
+  /* iPadのSafari・Chromeでは 100vh が「アドレスバーやタブ欄を引っ込めたときの高さ」になり、
+     バーが出ている間は画面の下（合計・支払いへ進む）がはみ出して押せなくなる（2026-10 実機で発生）。
+     dvh は「いま実際に見えている高さ」。対応していない古いブラウザは上の 100vh を使う。 */
   height: 100vh;
+  height: 100dvh;
 }
 
 /* ===== ヘッダー ===== */
@@ -271,6 +275,7 @@ button { cursor: pointer; border: none; background: none; }
   background: var(--surface);
   display: flex;
   flex-direction: column;
+  min-height: 0;   /* 高さが足りないときは注文リストの方が縮んでスクロールし、合計とボタンは残る */
 }
 .cart-header {
   padding: 10px 14px;
@@ -307,7 +312,9 @@ button { cursor: pointer; border: none; background: none; }
 
 .cart-list {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
   padding: 4px 0;
 }
 .cart-empty {
@@ -914,6 +921,7 @@ button { cursor: pointer; border: none; background: none; }
   width: 100%;
   max-width: 520px;
   max-height: 92vh;
+  max-height: 92dvh;   /* 100vh と同じ理由。モーダル下のボタンが画面外に出ないように */
   overflow: hidden;
   display: flex;
   flex-direction: column;
