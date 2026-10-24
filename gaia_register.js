@@ -65,6 +65,14 @@ function refreshVisitDateIfStale() {
 
 // ===== 初期化 =====
 window.addEventListener("DOMContentLoaded", async () => {
+  // 印刷で使うフォントを先に読み込んでおく（印刷プレビューを開いてから取りに行くと待たされる）
+  try {
+    if (document.fonts && document.fonts.load) {
+      ["400 12px 'Noto Sans JP'", "500 12px 'Noto Sans JP'", "700 12px 'Noto Sans JP'",
+       "600 12px 'Noto Serif JP'", "700 12px 'Noto Serif JP'"].forEach(f => document.fonts.load(f, "明細書控あ"));
+    }
+  } catch (e) {}
+
   // 日付を今日に（ローカル時刻基準）
   document.getElementById("visitDate").value = todayLocal();
   lastKnownDate = todayLocal();
