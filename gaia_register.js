@@ -1348,7 +1348,7 @@ function renderMultiPickOptions() {
     return `
       <div class="dose-opt${multiPickSelected.has(p.id) ? " selected" : ""}" onclick="toggleMultiPick(${p.id})">
         <div class="dose-value">${escapeHtml(p.name)}</div>
-        <div class="dose-price">${yenDisp(p.price)}</div>
+        <div class="dose-price">${hasGigiSame(p) ? "金額入力" : yenDisp(p.price)}</div>
       </div>
     `;
   }).join("");
@@ -1372,9 +1372,11 @@ function updateMultiPickTotal() {
   const sel = multiPickGroup.filter(p =>
     multiPickSelected.has(p.id) && !(isDefaultOn(p) && cartHasItemNamed(p.name))
   );
-  const total = sel.reduce((s, p) => s + (p.price || 0), 0);
+  // gigi:same の項目（「その他」など）は確定後に金額を入力するので、合計には含めず「＋金額入力」と添える
+  const total = sel.filter(p => !hasGigiSame(p)).reduce((s, p) => s + (p.price || 0), 0);
+  const hasPriced = sel.some(hasGigiSame);
   document.getElementById("multiPickCount").textContent = sel.length;
-  document.getElementById("multiPickTotalAmount").textContent = yenDisp(total);
+  document.getElementById("multiPickTotalAmount").textContent = yenDisp(total) + (hasPriced ? "＋金額入力" : "");
 }
 
 function confirmMultiPick() {
@@ -1387,14 +1389,33 @@ function confirmMultiPick() {
     return;
   }
   if (!canAddItem()) return;
+  // gigi:same の項目があれば、1つずつ金額を聞いてから1行にまとめる
+  const priced = sel.filter(hasGigiSame);
+  if (priced.length > 0) {
+    multiPickPricing = { sel: sel, queue: priced, idx: 0, prices: {} };
+    closeMultiPickModal();
+    openMultiPickPriceStep();
+    return;
+  }
+  pushMultiPickLine(sel, {});
+  closeMultiPickModal();
+  renderCart();
+}
+
+// 複数選択の選択項目を1行にまとめてカートに積む。
+// enteredPrices：gigi:same の項目に入力された金額（商品ID → 金額）。
+// gigi:same の項目は、入力額を単価にも技術料にも足す（単独タイルの gigi:same と同じ扱い）。
+function pushMultiPickLine(sel, enteredPrices) {
+  const priceOf = p => hasGigiSame(p) ? (Number(enteredPrices[p.id]) || 0) : (p.price || 0);
+  const gigiOf  = p => hasGigiSame(p) ? (Number(enteredPrices[p.id]) || 0) : (p.gigi || 0);
   // 選択項目を1行に合算（品名は「・」区切りで連結、単価・技術料は合計）
   // 行内に prefix:XXX を持つ項目があれば、行頭に「XXX 」を1回だけ付ける
   //（例：採血＋Aセット → 「血液検査 採血・Aセット」）
   const prefix = sel.map(getPrefix).find(px => px) || "";
   const joined = sel.map(p => p.name).join("・");
   const name = prefix ? `${prefix} ${joined}` : joined;
-  const price = sel.reduce((s, p) => s + (p.price || 0), 0);
-  const gigi = sel.reduce((s, p) => s + (p.gigi || 0), 0);
+  const price = sel.reduce((s, p) => s + priceOf(p), 0);
+  const gigi = sel.reduce((s, p) => s + gigiOf(p), 0);
   state.cart.push(finalizeNewCartItem({
     itemId: itemIdCounter++,
     productId: null,
@@ -1414,7 +1435,40 @@ function confirmMultiPick() {
     masterPrice: price,  // 技術料の按分計算用（編集で単価が変われば技術料も比例）
     gigi: gigi
   }));
-  closeMultiPickModal();
+}
+
+// ===== 複数選択の中の gigi:same 項目（血検外注の「その他」など）の金額入力 =====
+// 確定を押したあと、gigi:same の項目ごとに金額入力モーダルを順に開く。
+// 全部入力し終えたら、選択項目と合わせて1行にまとめてカートに積む。
+// 金額入力でキャンセル・×を押したら、選択を残したまま複数選択の画面に戻る。
+let multiPickPricing = null;   // { sel, queue, idx, prices }
+
+function openMultiPickPriceStep() {
+  const mp = multiPickPricing;
+  if (!mp) return;
+  openPriceModalForProduct(mp.queue[mp.idx]);
+  const btn = document.querySelector("#priceInputModal .btn-confirm");
+  if (btn) btn.textContent = (mp.idx < mp.queue.length - 1) ? "次へ" : "カートに追加";
+}
+
+// confirmPrice から呼ばれる。金額を受け取り、次の項目へ進むか、1行にまとめて積む。
+function confirmMultiPickPrice(price) {
+  const mp = multiPickPricing;
+  mp.prices[mp.queue[mp.idx].id] = price;
+  mp.idx++;
+  if (mp.idx < mp.queue.length) {
+    openMultiPickPriceStep();
+    return;
+  }
+  // 入力中にカートが変わった場合に備えて、積む直前にも上限を確認する
+  if (!canAddItem()) {
+    multiPickPricing = null;
+    closePriceModal();
+    return;
+  }
+  multiPickPricing = null;   // 先に外す（closePriceModal で複数選択の画面に戻さないため）
+  pushMultiPickLine(mp.sel, mp.prices);
+  closePriceModal();
   renderCart();
 }
 
@@ -1661,6 +1715,11 @@ function confirmPrice() {
     showToast("金額を入力してください", "error");
     return;
   }
+  // 複数選択の中の gigi:same 項目なら、単独の品目としては積まずに複数選択側へ返す
+  if (multiPickPricing) {
+    confirmMultiPickPrice(price);
+    return;
+  }
   if (!canAddItem()) return;
   const prod = priceInputProduct;
   // 担当者選択フラグがある品目は、カート追加前に担当者を選ばせる
@@ -1680,6 +1739,13 @@ function closePriceModal() {
   guideEl.textContent = "";
   guideEl.classList.add("hidden");
   priceInputProduct = null;
+  const btn = document.querySelector("#priceInputModal .btn-confirm");
+  if (btn) btn.textContent = "カートに追加";
+  // 複数選択の金額入力の途中でキャンセル・×を押した → 選択を残したまま複数選択の画面に戻る
+  if (multiPickPricing) {
+    multiPickPricing = null;
+    document.getElementById("multiPickModal").classList.remove("hidden");
+  }
 }
 
 // ===== 薬・物販 数量入力モーダル =====
