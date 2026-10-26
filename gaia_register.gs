@@ -55,6 +55,7 @@ const ORPHAN_COLOR  = "#dcdcdc";  // グレー：販売記録に対応が無い�
 const FREE_INPUT_COLOR = "#ffe0b2";  // 薄オレンジ：明細セル。自由入力を使った会計
 const DUP_COLOR        = "#ffcdd2";  // 薄赤　　　：伝票番号セル。二重送信の疑い
 const UNCHECKED_COLOR  = "#b3e5fc";  // 水色　　　：確認済み／カード決済セル。未チェックの会計
+const BOTH_CHECKED_COLOR = "#d1c4e9";  // 薄紫　　　：確認済み／カード決済セル。両方にチェックがある会計
 
 // ===== 二重送信の判定条件 =====
 // 飼い主名・ペット名・合計・明細が完全に一致し、かつ記録日時がこの分数以内に
@@ -1218,9 +1219,12 @@ function getRecordInvoiceNos(ss, rec) {
 //   - カード決済✅  → 技術料は台帳へ回し、入金確認後に繰越で加算する（従来通り）
 //   - 確認済み✅    → その月の技術料として集計する
 //   - どちらも無し  → 会計の確認がまだ終わっていないとみなし、集計から外す
-// 戻り値：{ nos: {伝票番号: true}, rows: [{no, date}], count }
+//   - 両方✅        → 集計ではカード決済として扱われる（確認済みは効かない）。
+//                     どちらのつもりか人が見直せるよう bothRows に分けて返す（2026-10）
+// 戻り値：{ nos: {伝票番号: true}, rows: [{no, date}], count,
+//           checkedRows: [行番号], bothRows: [{no, date, sheetRow}], cols }
 function getUncheckedRecords(ss, year, month, rec) {
-  const empty = { nos: {}, rows: [], count: 0 };
+  const empty = { nos: {}, rows: [], count: 0, checkedRows: [], bothRows: [] };
   rec = rec || readRecords_(ss);
   if (!rec.sheet || !rec.rows.length) return empty;
 
@@ -1233,10 +1237,20 @@ function getUncheckedRecords(ss, year, month, rec) {
   const nos = {};
   const list = [];
   const checkedRows = [];      // チェック済みの行番号（色を消す対象）
+  const bothRows = [];         // 確認済みとカード決済の両方にチェックがある行（薄紫にする対象）
+  const bothSeen = {};
   rows.forEach(function (r, i) {
     const sheetRow = i + 2;
     const d = parseVisitDate(r[C["会計日"]]);
     if (!d || d.getFullYear() !== year || (d.getMonth() + 1) !== month) return;
+    if (isChecked(r[C["カード決済"]]) && isChecked(r[C["確認済み"]])) {
+      const rawB = String(r[C["伝票番号"]] || "").trim();
+      const keyB = normInvoice(rawB);
+      // 色は行ごとに付ける。一覧は同一伝票の複数行を1件として数える
+      bothRows.push({ no: rawB, date: formatVisitDate(d), sheetRow: sheetRow, first: !(keyB && bothSeen[keyB]) });
+      if (keyB) bothSeen[keyB] = true;
+      return;
+    }
     if (isChecked(r[C["カード決済"]]) || isChecked(r[C["確認済み"]])) {
       checkedRows.push(sheetRow);   // カードは別ルート／確認済みは対象外。どちらも色は消す
       return;
@@ -1251,7 +1265,7 @@ function getUncheckedRecords(ss, year, month, rec) {
     nos[key] = true;
     list.push({ no: raw, key: key, date: formatVisitDate(d), sheetRow: sheetRow });
   });
-  return { nos: nos, rows: list, count: list.length, checkedRows: checkedRows, cols: C };
+  return { nos: nos, rows: list, count: list.length, checkedRows: checkedRows, bothRows: bothRows, cols: C };
 }
 
 // 行番号の配列を A1 記法の範囲リストに変換する（連続する行はまとめる）。
@@ -1304,14 +1318,18 @@ function promptUncheckedRecords() {
       const colCheck = un.cols["確認済み"] + 1;
       const colCard  = un.cols["カード決済"] + 1;
       const uncheckedRows = un.rows.map(function (r) { return r.sheetRow; });
+      const bothSheetRows = un.bothRows.map(function (r) { return r.sheetRow; });
 
       // 「確認済み」「カード決済」2列分の範囲をまとめ、それぞれ1回の呼び出しで処理する
       const toPaint = rowsToA1(uncheckedRows, colCheck)
                         .concat(rowsToA1(uncheckedRows, colCard));
+      const toPaintBoth = rowsToA1(bothSheetRows, colCheck)
+                        .concat(rowsToA1(bothSheetRows, colCard));
       const toClear = rowsToA1(un.checkedRows, colCheck)
                         .concat(rowsToA1(un.checkedRows, colCard));
 
       if (toPaint.length) rec.getRangeList(toPaint).setBackground(UNCHECKED_COLOR);
+      if (toPaintBoth.length) rec.getRangeList(toPaintBoth).setBackground(BOTH_CHECKED_COLOR);
       if (toClear.length) rec.getRangeList(toClear).setBackground(null);
 
       painted = uncheckedRows.length;
@@ -1321,25 +1339,45 @@ function promptUncheckedRecords() {
     }
   }
 
-  if (un.count === 0) {
+  // 両方にチェックがある伝票（同一伝票の複数行は1件）
+  const both = un.bothRows.filter(function (r) { return r.first; });
+
+  if (un.count === 0 && both.length === 0) {
     ui.alert("未チェック伝票の確認",
-      year + "年" + month + "月の会計は、すべて「確認済み」か「カード決済」に\n" +
-      "チェックが入っています。\n\n" +
-      "水色の印が残っていた " + cleared + "行は色を消しました。", ui.ButtonSet.OK);
+      year + "年" + month + "月の会計は、すべて「確認済み」か「カード決済」の\n" +
+      "どちらか一方にチェックが入っています。\n\n" +
+      "印が残っていた " + cleared + "行は色を消しました。", ui.ButtonSet.OK);
     return;
   }
 
-  const shown = un.rows.slice(0, UNCHECKED_LIST_MAX);
-  let msg =
-    year + "年" + month + "月の会計のうち、「確認済み」にも「カード決済」にも\n" +
-    "チェックが無い伝票が " + un.count + "件 あります。\n\n" +
-    "このまま月次集計を実行すると、これらは集計に含まれません。\n" +
-    "該当行の「確認済み」「カード決済」セルを水色にしました。\n" +
-    "（チェックを入れてからもう一度実行すると色が消えます）\n\n" +
-    shown.map(function (r) { return "  " + r.date + "  伝票 " + r.no; }).join("\n");
-  if (un.count > shown.length) {
-    msg += "\n  … ほか " + (un.count - shown.length) + "件";
+  let msg = "";
+  if (un.count > 0) {
+    const shown = un.rows.slice(0, UNCHECKED_LIST_MAX);
+    msg +=
+      "【未チェック】" + year + "年" + month + "月の会計のうち、「確認済み」にも「カード決済」にも\n" +
+      "チェックが無い伝票が " + un.count + "件 あります。\n" +
+      "このまま月次集計を実行すると、これらは集計に含まれません。\n" +
+      "該当行の「確認済み」「カード決済」セルを水色にしました。\n\n" +
+      shown.map(function (r) { return "  " + r.date + "  伝票 " + r.no; }).join("\n");
+    if (un.count > shown.length) {
+      msg += "\n  … ほか " + (un.count - shown.length) + "件";
+    }
+  } else {
+    msg += "【未チェック】ありません。\n";
   }
+
+  if (both.length > 0) {
+    const shownB = both.slice(0, UNCHECKED_LIST_MAX);
+    msg += (un.count > 0 ? "\n\n" : "\n") +
+      "【両方にチェック】「確認済み」と「カード決済」の両方にチェックがある伝票が " + both.length + "件 あります。\n" +
+      "月次集計ではカード決済として扱われます（当月の技術料から外れ、入金確認後に繰越）。\n" +
+      "該当行の「確認済み」「カード決済」セルを薄紫にしました。どちらか一方に直してください。\n\n" +
+      shownB.map(function (r) { return "  " + r.date + "  伝票 " + r.no; }).join("\n");
+    if (both.length > shownB.length) {
+      msg += "\n  … ほか " + (both.length - shownB.length) + "件";
+    }
+  }
+  msg += "\n\n（直してからもう一度実行すると色が消えます）";
   ui.alert("未チェック伝票の確認", msg, ui.ButtonSet.OK);
 }
 
@@ -2977,14 +3015,16 @@ function uiSaveSlip(payload) {
     rec.getRange(row, C["確認済み"] + 1).setValue(payload.checked === true);
     rec.getRange(row, C["カード決済"] + 1).setValue(payload.card === true);
 
-    // どちらかにチェックが付いたら「未チェック伝票」の水色は用済みなので消す。
-    // （メニューを回し直さないと消えない状態を作らないため）
+    // どちらか一方にチェックが付いたら「未チェック伝票の確認」の印（水色・薄紫）は用済みなので消す。
+    // 両方にチェックが付いたまま保存したときは薄紫にする。
+    // （メニューを回し直さないと色が実態と合わない状態を作らないため）
     if (payload.checked === true || payload.card === true) {
       try {
+        const both = (payload.checked === true && payload.card === true);
         rec.getRangeList([
           columnToLetter(C["確認済み"] + 1) + row,
           columnToLetter(C["カード決済"] + 1) + row
-        ]).setBackground(null);
+        ]).setBackground(both ? BOTH_CHECKED_COLOR : null);
       } catch (eBg) { /* 色は目印。失敗しても保存は成立させる */ }
     }
 

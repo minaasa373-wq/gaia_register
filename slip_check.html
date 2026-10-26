@@ -630,6 +630,23 @@ function paintToggles() {
 
 function toggle(which) {
   if (!slip) return;
+  if (which === 1 && mode === MODE_REC && !slip.ui1 && slip.ui2) {
+    // 販売記録タブ：カード決済が付いている伝票に確認済みを付けたら、カード決済を外す（2026-10）。
+    // 両方付いていると月次集計ではカード決済の扱いになり、確認済みは効かないため。
+    // ただしカード決済台帳に転記済みの伝票は切り替えさせない。カード決済を外しても台帳の行が残り、
+    // その月の月次集計をやり直すと「当月分」と「繰越」で二重に給与へ乗るおそれがあるため。
+    // （ledger はサーバがカード決済の伝票にだけ付ける。"missing" ＝ まだ台帳に無い）
+    if (slip.ledger && slip.ledger.state !== "missing") {
+      setStatus("この伝票はカード決済台帳に転記済み（または台帳を確認できない）ため、確認済みには切り替えられません。" +
+                "カード決済のまま入金確認してください", "err");
+      return;
+    }
+    slip.ui1 = true;
+    slip.ui2 = false;
+    paintToggles();
+    setStatus("確認済みを付けたので、カード決済を外しました（保存すると反映されます）");
+    return;
+  }
   if (which === 1) slip.ui1 = !slip.ui1;
   else if (which === 2) { if (document.getElementById("tg2")) slip.ui2 = !slip.ui2; }
   else if (which === 3) { if (document.getElementById("tg3")) slip.ui3 = !slip.ui3; }
