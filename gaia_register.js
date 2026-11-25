@@ -2092,7 +2092,11 @@ function recalc() {
     subtotal += line;
     if (!isTaxIncludedItem(item)) taxableSub += line;
   });
-  const tax = Math.ceil(taxableSub * 0.1);
+  // 消費税は1円未満を四捨五入（2026-11、繰り上げから変更）。
+  // ×0.1 ではなく ÷10 で計算する（0.1 は2進数で正確に表せず、123.5 が 123.4999… になり得るため）。
+  // 返品でマイナスのときも、プラスと同じ金額になるよう絶対値で丸めて符号を戻す
+  // （Math.round(-123.5) は -123 になり、プラスの 124 と食い違うため）。
+  const tax = Math.sign(taxableSub) * Math.round(Math.abs(taxableSub) / 10);
   const total = subtotal + tax;
   document.getElementById("subtotalDisp").textContent = yenDisp(subtotal);
   document.getElementById("taxDisp").textContent = yenDisp(tax);
